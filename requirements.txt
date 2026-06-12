@@ -1,0 +1,11 @@
+requests>=2.31
+chromadb>=0.5
+sentence-transformers>=3.0
+rank-bm25>=0.2
+anthropic>=0.40
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.6
+pytest>=8.0
+python-dotenv>=1.0
+pyyaml>=6.0

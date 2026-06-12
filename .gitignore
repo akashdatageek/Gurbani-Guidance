@@ -1,0 +1,13 @@
+data/
+.env
+__pycache__/
+*.pyc
+*.pyo
+node_modules/
+*.zip
+.chroma
+.next/
+dist/
+*.egg-info/
+.venv/
+venv/
