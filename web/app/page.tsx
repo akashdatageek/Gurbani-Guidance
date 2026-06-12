@@ -19,6 +19,7 @@ export interface Message {
   sources?: Source[];
   failedQuotes?: string[];
   loading?: boolean;
+  questionType?: string;
 }
 
 const API_BASE =
@@ -96,6 +97,7 @@ export default function Home() {
                   content: data.answer,
                   sources: data.sources ?? [],
                   failedQuotes: data.failed_quotes ?? [],
+                  questionType: data.question_type ?? "conceptual",
                   loading: false,
                 }
               : m

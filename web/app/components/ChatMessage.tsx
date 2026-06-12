@@ -18,6 +18,23 @@ function SourceChip({ source }: { source: Source }) {
   );
 }
 
+const AGENT_LABELS: Record<string, { label: string; color: string }> = {
+  conceptual:  { label: "Conceptual",  color: "bg-sky-100 text-sky-700 border-sky-200" },
+  situational: { label: "Guidance",    color: "bg-emerald-100 text-emerald-700 border-emerald-200" },
+  comparative: { label: "Comparative", color: "bg-violet-100 text-violet-700 border-violet-200" },
+  rehat:       { label: "Conduct",     color: "bg-orange-100 text-orange-700 border-orange-200" },
+  adversarial: { label: "Out of scope",color: "bg-stone-100 text-stone-500 border-stone-200" },
+};
+
+function AgentBadge({ type }: { type: string }) {
+  const info = AGENT_LABELS[type] ?? AGENT_LABELS.conceptual;
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs border ${info.color}`}>
+      {info.label}
+    </span>
+  );
+}
+
 function FailedQuoteNotice({ count }: { count: number }) {
   if (count === 0) return null;
   return (
@@ -121,10 +138,13 @@ export default function ChatMessage({ message }: ChatMessageProps) {
           </div>
         </div>
 
-        {/* Sources */}
-        {!isLoading && message.sources && message.sources.length > 0 && (
-          <div className="ml-9 flex flex-wrap gap-1.5">
-            {message.sources.map((src) => (
+        {/* Agent type + sources */}
+        {!isLoading && (
+          <div className="ml-9 flex flex-wrap gap-1.5 items-center">
+            {message.questionType && (
+              <AgentBadge type={message.questionType} />
+            )}
+            {message.sources && message.sources.map((src) => (
               <SourceChip key={`${src.shabad_id}-${src.ang}`} source={src} />
             ))}
           </div>

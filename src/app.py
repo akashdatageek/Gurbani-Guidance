@@ -126,6 +126,7 @@ class AskResponse(BaseModel):
     answer: str
     failed_quotes: list[str]
     sources: list[dict[str, Any]]
+    question_type: str = "conceptual"
 
 
 # ---------------------------------------------------------------------------
@@ -193,4 +194,5 @@ async def ask_endpoint(request: Request, body: AskRequest) -> AskResponse:
         answer=result["answer"],
         failed_quotes=result["failed_quotes"],
         sources=result["sources"],
+        question_type=result.get("question_type", "conceptual"),
     )
