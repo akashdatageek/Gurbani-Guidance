@@ -32,19 +32,28 @@ logger = logging.getLogger(__name__)
 
 
 def _make_passage_text(window: list[ShabadLine]) -> str:
-    """Create embed text from a window of lines: 'transliteration | translation_en' per line."""
+    """Create embed text: 'transliteration | translation' per line; skip empty parts."""
     parts = []
     for line in window:
-        parts.append(f"{line.transliteration} | {line.translation_en}")
+        segments = []
+        if line.transliteration:
+            segments.append(line.transliteration)
+        if line.translation_en:
+            segments.append(line.translation_en)
+        if segments:
+            parts.append(" | ".join(segments))
+        elif line.gurmukhi:
+            parts.append(line.gurmukhi)  # last-resort: use Gurmukhi itself
     return "\n".join(parts)
 
 
 def _make_passage_document(window: list[ShabadLine]) -> str:
-    """Stored document: JSON with parallel arrays for gurmukhi and translation_en."""
+    """Stored document: parallel arrays including per-line ang numbers."""
     return json.dumps(
         {
             "gurmukhi": [line.gurmukhi for line in window],
             "translation_en": [line.translation_en for line in window],
+            "line_angs": [line.ang for line in window],
         },
         ensure_ascii=False,
     )

@@ -3,18 +3,23 @@ import unicodedata
 import re
 from typing import Iterator
 from pydantic import BaseModel, field_validator
-from src.config import SHABADS_FILE
+from src.config import SHABADS_FILE, WINDOW_SIZE, WINDOW_OVERLAP
 
 
 class ShabadLine(BaseModel):
     gurmukhi: str
     transliteration: str
     translation_en: str
+    # Per-line ang — the actual ang this line appears on (may differ from shabad start ang)
+    ang: int = 0
+    # Additional translations (populated when available)
+    translation_en_ms: str = ""   # Manmohan Singh
+    translation_en_ssk: str = ""  # Sant Singh Khalsa
 
 
 class Shabad(BaseModel):
     shabad_id: int
-    ang: int
+    ang: int          # ang where the shabad STARTS
     raag: str
     writer: str
     gurmukhi: str
@@ -66,20 +71,38 @@ def normalize_gurmukhi(text: str) -> str:
 
 
 def make_windows(
-    lines: list[ShabadLine], window_size: int = 12, overlap: int = 2
+    lines: list[ShabadLine],
+    window_size: int = WINDOW_SIZE,
+    overlap: int = WINDOW_OVERLAP,
 ) -> list[list[ShabadLine]]:
     """Window shabad lines; never crosses shabad boundary.
 
-    If the shabad is shorter than window_size, returns it as a single window.
+    If shabad fits in one window, returns it as-is.
     For longer shabads, slides with step = window_size - overlap.
+    A trailing window shorter than `overlap * 2` is merged into the previous
+    one rather than emitted as an under-context fragment.
     """
     if len(lines) <= window_size:
         return [lines]
-    windows = []
+
+    windows: list[list[ShabadLine]] = []
     step = window_size - overlap
     i = 0
     while i < len(lines):
-        window = lines[i : i + window_size]
+        window = lines[i: i + window_size]
         windows.append(window)
         i += step
+
+    # Merge a short trailing window to avoid under-context fragments
+    min_useful = max(overlap * 2, 4)
+    if len(windows) > 1 and len(windows[-1]) < min_useful:
+        # Absorb the tail into the previous window (may exceed window_size slightly,
+        # but only by a few lines and preserves all content)
+        prev = windows[-2]
+        tail = windows[-1]
+        # Only absorb lines not already in prev
+        extra = [l for l in tail if l not in prev]
+        windows[-2] = prev + extra
+        windows.pop()
+
     return windows
