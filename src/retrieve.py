@@ -4,14 +4,7 @@ Public API:
     retrieve(question, k=8, **filters) -> list[Passage]
 
 Optional filters:
-    writer  — exact string match on writer field
-    raag    — exact string match on raag field
-    ang_range — (start_ang, end_ang) inclusive
-
-Run-time note:
-    The module-level state (_embedder, _collection, _bm25_index, _bm25_meta) is
-    initialised lazily on first call to retrieve(), or eagerly via init().
-    src/app.py calls init() at startup so the lifespan warm-up happens once.
+    writer, raag, ang_range=(start,end)
 """
 
 from __future__ import annotations
@@ -19,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re as _re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -29,6 +23,7 @@ from src.config import (
     EMBED_MODEL,
     RRF_K,
     SHABADS_FILE,
+    SIMILARITY_THRESHOLD,
     SPARSE_K,
     TOP_K,
     WINDOW_OVERLAP,
@@ -38,9 +33,7 @@ from src.corpus import load_shabads, make_windows
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Passage dataclass
-# ---------------------------------------------------------------------------
+_PUNCT_RE = _re.compile(r"[^\w\s]")  # strip punctuation for BM25 tokenization
 
 
 @dataclass
@@ -51,6 +44,7 @@ class Passage:
     writer: str
     gurmukhi: list[str]
     translation_en: list[str]
+    line_angs: list[int] = field(default_factory=list)  # per-line ang numbers
     score: float = 0.0
 
 
@@ -61,24 +55,20 @@ class Passage:
 _embedder: Any = None
 _collection: Any = None
 _bm25_index: Any = None
-_bm25_passages: list[dict] = []  # parallel to BM25 corpus
+_bm25_passages: list[dict] = []
 
 
 def init() -> None:
-    """Eagerly initialise all retrieval components. Safe to call multiple times."""
     global _embedder, _collection, _bm25_index, _bm25_passages
-
     if _embedder is not None:
-        return  # already initialised
+        return
 
     try:
         import chromadb
         from rank_bm25 import BM25Okapi
         from sentence_transformers import SentenceTransformer
     except ImportError as exc:
-        raise ImportError(
-            "Missing dependencies. Run: pip install -r requirements.txt"
-        ) from exc
+        raise ImportError("Run: pip install -r requirements.txt") from exc
 
     if not os.path.exists(SHABADS_FILE):
         raise FileNotFoundError(
@@ -95,7 +85,6 @@ def init() -> None:
         metadata={"hnsw:space": "cosine"},
     )
 
-    # Build BM25 corpus from shabads (same windowing as embed.py)
     logger.info("Building BM25 index …")
     corpus_tokens: list[list[str]] = []
     _bm25_passages = []
@@ -104,11 +93,11 @@ def init() -> None:
         windows = make_windows(shabad.lines, window_size=WINDOW_SIZE, overlap=WINDOW_OVERLAP)
         for win_idx, window in enumerate(windows):
             passage_id = f"{shabad.shabad_id}-{win_idx}"
-            text_parts = []
-            for line in window:
-                text_parts.append(f"{line.transliteration} {line.translation_en}")
-            text = " ".join(text_parts)
-            tokens = text.lower().split()
+            text = " ".join(
+                f"{line.transliteration} {line.translation_en}" for line in window
+            )
+            # Strip punctuation before tokenizing so "naam." == "naam"
+            tokens = _PUNCT_RE.sub(" ", text.lower()).split()
             corpus_tokens.append(tokens)
             _bm25_passages.append(
                 {
@@ -119,6 +108,7 @@ def init() -> None:
                     "writer": shabad.writer,
                     "gurmukhi": [line.gurmukhi for line in window],
                     "translation_en": [line.translation_en for line in window],
+                    "line_angs": [line.ang for line in window],
                 }
             )
 
@@ -135,9 +125,7 @@ def _ensure_init() -> None:
 # Dense retrieval
 # ---------------------------------------------------------------------------
 
-
 def _dense_retrieve(query: str, k: int, where: dict | None) -> list[tuple[str, float]]:
-    """Return list of (passage_id, score) from ChromaDB."""
     vec = _embedder.encode([query], normalize_embeddings=True).tolist()[0]
     kwargs: dict[str, Any] = {
         "query_embeddings": [vec],
@@ -147,10 +135,8 @@ def _dense_retrieve(query: str, k: int, where: dict | None) -> list[tuple[str, f
     if where:
         kwargs["where"] = where
     results = _collection.query(**kwargs)
-
     ids = results.get("ids", [[]])[0]
     distances = results.get("distances", [[]])[0]
-    # Chroma cosine distance = 1 - similarity; convert to similarity
     return [(pid, 1.0 - dist) for pid, dist in zip(ids, distances)]
 
 
@@ -158,12 +144,9 @@ def _dense_retrieve(query: str, k: int, where: dict | None) -> list[tuple[str, f
 # Sparse retrieval
 # ---------------------------------------------------------------------------
 
-
 def _sparse_retrieve(query: str, k: int, filters: dict) -> list[tuple[str, float]]:
-    """Return list of (passage_id, bm25_score)."""
-    tokens = query.lower().split()
+    tokens = _PUNCT_RE.sub(" ", query.lower()).split()
     scores = _bm25_index.get_scores(tokens)
-    # Apply filters
     filtered: list[tuple[str, float]] = []
     for idx, score in enumerate(scores):
         p = _bm25_passages[idx]
@@ -189,77 +172,67 @@ def _matches_filters(passage: dict, filters: dict) -> bool:
 # RRF fusion
 # ---------------------------------------------------------------------------
 
-
 def _rrf_fuse(
     dense_results: list[tuple[str, float]],
     sparse_results: list[tuple[str, float]],
     k_param: int = RRF_K,
     top_k: int = TOP_K,
 ) -> list[tuple[str, float]]:
-    """Reciprocal Rank Fusion: score = Σ 1/(k_param + rank)."""
     scores: dict[str, float] = {}
     for rank, (pid, _) in enumerate(dense_results):
         scores[pid] = scores.get(pid, 0.0) + 1.0 / (k_param + rank + 1)
     for rank, (pid, _) in enumerate(sparse_results):
         scores[pid] = scores.get(pid, 0.0) + 1.0 / (k_param + rank + 1)
-    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    return ranked[:top_k]
+    return sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
 
 
 # ---------------------------------------------------------------------------
-# Passage lookup helpers
+# Batch passage lookup
 # ---------------------------------------------------------------------------
 
+def _lookup_passages_batch(fused: list[tuple[str, float]]) -> list[Passage]:
+    """Fetch all passages in a single ChromaDB call instead of N round-trips."""
+    if not fused:
+        return []
+    fused_ids = [pid for pid, _ in fused]
+    score_map = {pid: score for pid, score in fused}
 
-def _lookup_passage_by_id(pid: str) -> Passage | None:
-    """Fetch a passage from ChromaDB by its ID."""
     try:
-        result = _collection.get(
-            ids=[pid],
-            include=["documents", "metadatas"],
+        result = _collection.get(ids=fused_ids, include=["documents", "metadatas"])
+    except Exception:
+        return []
+
+    passages: list[Passage] = []
+    for pid, doc_str, meta in zip(
+        result.get("ids", []),
+        result.get("documents", []),
+        result.get("metadatas", []),
+    ):
+        try:
+            doc = json.loads(doc_str)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        p = Passage(
+            shabad_id=meta.get("shabad_id", 0),
+            ang=meta.get("ang", 0),
+            raag=meta.get("raag", ""),
+            writer=meta.get("writer", ""),
+            gurmukhi=doc.get("gurmukhi", []),
+            translation_en=doc.get("translation_en", []),
+            line_angs=doc.get("line_angs", []),
+            score=score_map.get(pid, 0.0),
         )
-    except Exception:  # noqa: BLE001
-        return None
-    if not result["ids"]:
-        return None
-    doc_str = result["documents"][0]
-    meta = result["metadatas"][0]
-    try:
-        doc = json.loads(doc_str)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    return Passage(
-        shabad_id=meta.get("shabad_id", 0),
-        ang=meta.get("ang", 0),
-        raag=meta.get("raag", ""),
-        writer=meta.get("writer", ""),
-        gurmukhi=doc.get("gurmukhi", []),
-        translation_en=doc.get("translation_en", []),
-    )
+        passages.append(p)
 
-
-def _build_chroma_where(filters: dict) -> dict | None:
-    """Build ChromaDB where clause from filter dict."""
-    conditions = []
-    if "writer" in filters:
-        conditions.append({"writer": {"$eq": filters["writer"]}})
-    if "raag" in filters:
-        conditions.append({"raag": {"$eq": filters["raag"]}})
-    if "ang_range" in filters:
-        start, end = filters["ang_range"]
-        conditions.append({"ang": {"$gte": start}})
-        conditions.append({"ang": {"$lte": end}})
-    if not conditions:
-        return None
-    if len(conditions) == 1:
-        return conditions[0]
-    return {"$and": conditions}
+    # Preserve RRF order
+    order = {pid: i for i, pid in enumerate(fused_ids)}
+    passages.sort(key=lambda p: order.get(f"{p.shabad_id}-{p.ang}", 999))
+    return passages
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-
 
 def retrieve(
     question: str,
@@ -267,18 +240,12 @@ def retrieve(
     writer: str | None = None,
     raag: str | None = None,
     ang_range: tuple[int, int] | None = None,
+    min_similarity: float = SIMILARITY_THRESHOLD,
 ) -> list[Passage]:
-    """Retrieve top-k passages matching question using hybrid dense+sparse RRF.
+    """Retrieve top-k passages using hybrid dense+sparse RRF.
 
-    Args:
-        question: Natural-language or Gurmukhi query.
-        k: Number of passages to return.
-        writer: Optional filter — only return passages from this writer.
-        raag: Optional filter — only return passages in this raag.
-        ang_range: Optional (start, end) ang range filter.
-
-    Returns:
-        List of Passage objects sorted by RRF score descending.
+    Returns an empty list if the best dense result is below min_similarity
+    (indicates the question is likely out of scope for the corpus).
     """
     _ensure_init()
 
@@ -292,14 +259,30 @@ def retrieve(
 
     where = _build_chroma_where(filters)
     dense = _dense_retrieve(question, k=DENSE_K, where=where)
+
+    # Relevance gate: if best dense hit is below threshold, treat as no-hit
+    if dense and dense[0][1] < min_similarity:
+        logger.info(
+            "Best dense similarity %.3f < threshold %.3f — treating as out-of-scope.",
+            dense[0][1], min_similarity,
+        )
+        return []
+
     sparse = _sparse_retrieve(question, k=SPARSE_K, filters=filters)
     fused = _rrf_fuse(dense, sparse, k_param=RRF_K, top_k=k)
+    return _lookup_passages_batch(fused)
 
-    passages: list[Passage] = []
-    for pid, rrf_score in fused:
-        p = _lookup_passage_by_id(pid)
-        if p is not None:
-            p.score = rrf_score
-            passages.append(p)
 
-    return passages
+def _build_chroma_where(filters: dict) -> dict | None:
+    conditions = []
+    if "writer" in filters:
+        conditions.append({"writer": {"$eq": filters["writer"]}})
+    if "raag" in filters:
+        conditions.append({"raag": {"$eq": filters["raag"]}})
+    if "ang_range" in filters:
+        start, end = filters["ang_range"]
+        conditions.append({"ang": {"$gte": start}})
+        conditions.append({"ang": {"$lte": end}})
+    if not conditions:
+        return None
+    return conditions[0] if len(conditions) == 1 else {"$and": conditions}

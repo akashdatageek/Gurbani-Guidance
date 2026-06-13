@@ -2,12 +2,11 @@
 import pytest
 from unittest.mock import patch
 
-SYNTHETIC_CORPUS = frozenset(
-    [
-        "ਸਤਿ ਨਾਮੁ ਕਰਤਾ ਪੁਰਖੁ",
-        "ਨਿਰਭਉ ਨਿਰਵੈਰੁ ਅਕਾਲ ਮੂਰਤਿ",
-    ]
-)
+# Synthetic corpus in the new format: {normalized_gurmukhi: {ang_set}}
+SYNTHETIC_CORPUS = {
+    "ਸਤਿ ਨਾਮੁ ਕਰਤਾ ਪੁਰਖੁ": {1},
+    "ਨਿਰਭਉ ਨਿਰਵੈਰੁ ਅਕਾਲ ਮੂਰਤਿ": {1},
+}
 
 
 def test_real_quote_survives():
@@ -88,4 +87,26 @@ def test_empty_answer():
         from src.verify import verify_answer
         cleaned, failed = verify_answer("")
         assert cleaned == ""
+        assert failed == []
+
+
+def test_ang_correction():
+    """Wrong ang should trigger a correction notice, not removal."""
+    with patch("src.verify._get_corpus_lines", return_value=SYNTHETIC_CORPUS):
+        from src.verify import verify_answer
+        # Correct text but wrong ang (ang=99, real ang=1)
+        answer = '<tuk ang="99">ਸਤਿ ਨਾਮੁ ਕਰਤਾ ਪੁਰਖੁ</tuk>'
+        cleaned, failed = verify_answer(answer)
+        assert "ਸਤਿ ਨਾਮੁ ਕਰਤਾ ਪੁਰਖੁ" in cleaned
+        assert "citation corrected" in cleaned
+        assert failed == []
+
+
+def test_correct_ang_no_correction():
+    """Correct ang should not trigger correction notice."""
+    with patch("src.verify._get_corpus_lines", return_value=SYNTHETIC_CORPUS):
+        from src.verify import verify_answer
+        answer = '<tuk ang="1">ਸਤਿ ਨਾਮੁ ਕਰਤਾ ਪੁਰਖੁ</tuk>'
+        cleaned, failed = verify_answer(answer)
+        assert "citation corrected" not in cleaned
         assert failed == []
