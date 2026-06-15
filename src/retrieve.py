@@ -72,7 +72,7 @@ def init() -> None:
 
     if not os.path.exists(SHABADS_FILE):
         raise FileNotFoundError(
-            f"Corpus not found at {SHABADS_FILE}. Run `python -m src.ingest` first."
+            f"Corpus not found at {SHABADS_FILE}. Run `python -m src.ingest_pdf` first."
         )
 
     logger.info("Loading embedding model %s …", EMBED_MODEL)
