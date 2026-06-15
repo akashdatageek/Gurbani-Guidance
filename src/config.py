@@ -3,10 +3,19 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ── Provider ─────────────────────────────────────────────────────────────────
+# Set PROVIDER=gemini to use Gemini instead of Claude
+PROVIDER = os.getenv("PROVIDER", "anthropic").lower()  # "anthropic" | "gemini"
+
 # ── Models ──────────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 CLASSIFIER_MODEL = os.getenv("CLASSIFIER_MODEL", "claude-haiku-4-5-20251001")
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
+GEMINI_CLASSIFIER_MODEL = os.getenv("GEMINI_CLASSIFIER_MODEL", "gemini-2.5-flash-lite-preview-06-17")
+
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "2500"))
 
 # ── Paths ────────────────────────────────────────────────────────────────────

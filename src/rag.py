@@ -36,9 +36,13 @@ from src.config import (
     ANTHROPIC_API_KEY,
     CLASSIFIER_MODEL,
     CLAUDE_MODEL,
+    GEMINI_API_KEY,
+    GEMINI_CLASSIFIER_MODEL,
+    GEMINI_MODEL,
     HISTORY_MAX_CHARS,
     HISTORY_MAX_TURNS,
     MAX_TOKENS,
+    PROVIDER,
     SHABADS_FILE,
     TOP_K,
 )
@@ -47,19 +51,77 @@ from src.verify import verify_answer
 
 logger = logging.getLogger(__name__)
 
-# Module-level Anthropic client — created once, reused across requests
-_client: anthropic.Anthropic | None = None
+# Module-level clients — created once, reused across requests
+_anthropic_client: anthropic.Anthropic | None = None
+_gemini_client: Any = None
 
 
-def _get_client() -> anthropic.Anthropic:
-    global _client
-    if _client is None:
+def _get_anthropic_client() -> anthropic.Anthropic:
+    global _anthropic_client
+    if _anthropic_client is None:
         if not ANTHROPIC_API_KEY:
-            raise RuntimeError(
-                "ANTHROPIC_API_KEY is not set. Add it to .env or the environment."
-            )
-        _client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    return _client
+            raise RuntimeError("ANTHROPIC_API_KEY is not set. Add it to .env or the environment.")
+        _anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    return _anthropic_client
+
+
+def _get_gemini_client() -> Any:
+    global _gemini_client
+    if _gemini_client is None:
+        try:
+            import google.generativeai as genai
+        except ImportError as exc:
+            raise ImportError("Run: pip install google-generativeai") from exc
+        if not GEMINI_API_KEY:
+            raise RuntimeError("GEMINI_API_KEY is not set. Add it to .env or the environment.")
+        genai.configure(api_key=GEMINI_API_KEY)
+        _gemini_client = genai
+    return _gemini_client
+
+
+def _llm_call(system: str, messages: list[dict], max_tokens: int = MAX_TOKENS) -> str:
+    """Unified LLM call — routes to Anthropic or Gemini based on PROVIDER."""
+    if PROVIDER == "gemini":
+        genai = _get_gemini_client()
+        import google.generativeai as _genai
+        history_for_gemini = []
+        for m in messages[:-1]:
+            role = "user" if m["role"] == "user" else "model"
+            history_for_gemini.append({"role": role, "parts": [m["content"]]})
+        model = _genai.GenerativeModel(
+            model_name=GEMINI_MODEL,
+            system_instruction=system,
+        )
+        chat = model.start_chat(history=history_for_gemini)
+        resp = chat.send_message(messages[-1]["content"])
+        return resp.text
+    else:
+        client = _get_anthropic_client()
+        resp = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=max_tokens,
+            system=system,
+            messages=messages,
+        )
+        return resp.content[0].text
+
+
+def _llm_classify_call(prompt: str) -> str:
+    """Cheap single-turn LLM call for classification."""
+    if PROVIDER == "gemini":
+        import google.generativeai as genai
+        _get_gemini_client()
+        model = genai.GenerativeModel(model_name=GEMINI_CLASSIFIER_MODEL)
+        resp = model.generate_content(prompt)
+        return resp.text.strip().upper()
+    else:
+        client = _get_anthropic_client()
+        resp = client.messages.create(
+            model=CLASSIFIER_MODEL,
+            max_tokens=10,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return resp.content[0].text.strip().upper()
 
 
 # ---------------------------------------------------------------------------
@@ -155,12 +217,7 @@ def _llm_classify(question: str) -> QuestionType:
         "Reply with exactly one word from the list above."
     )
     try:
-        resp = _get_client().messages.create(
-            model=CLASSIFIER_MODEL,
-            max_tokens=10,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        label = resp.content[0].text.strip().upper()
+        label = _llm_classify_call(prompt)
         mapping = {
             "FABRICATION": QuestionType.FABRICATION,
             "OUT_OF_SCOPE": QuestionType.OUT_OF_SCOPE,
@@ -517,17 +574,13 @@ def ask(
 
     # Immediate refusals — no retrieval
     if qtype in (QuestionType.FABRICATION, QuestionType.OUT_OF_SCOPE):
-        # The system prompt itself is the answer for these types
-        # Use it directly rather than calling the LLM unnecessarily
-        client = _get_client()
-        resp = client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=300,
+        answer = _llm_call(
             system=_SYSTEM_PROMPTS[qtype],
             messages=[{"role": "user", "content": question}],
+            max_tokens=300,
         )
         return {
-            "answer": resp.content[0].text,
+            "answer": answer,
             "failed_quotes": [],
             "sources": [],
             "question_type": qtype.value,
@@ -573,17 +626,13 @@ def ask(
     messages: list[dict] = list(clean_history)
     messages.append({"role": "user", "content": user_content})
 
-    client = _get_client()
     try:
-        response = client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=MAX_TOKENS,
+        raw_answer = _llm_call(
             system=_SYSTEM_PROMPTS[qtype],
             messages=messages,
         )
-        raw_answer = response.content[0].text
-    except anthropic.APIError as exc:
-        logger.error("Anthropic API error: %s", exc)
+    except Exception as exc:
+        logger.error("LLM API error (%s): %s", PROVIDER, exc)
         raise
 
     verified_answer, failed_quotes = verify_answer(raw_answer)
