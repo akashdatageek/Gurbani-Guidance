@@ -234,9 +234,13 @@ Gurbani-Guidance/
 
 | Variable | Default | Description |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | *(required)* | Claude API key |
-| `CLAUDE_MODEL` | `claude-sonnet-4-6` | Generation model |
-| `CLASSIFIER_MODEL` | `claude-haiku-4-5-20251001` | Cheap router fallback for multilingual |
+| `PROVIDER` | `anthropic` | LLM provider: `anthropic` or `gemini` |
+| `ANTHROPIC_API_KEY` | *(required if anthropic)* | Claude API key |
+| `CLAUDE_MODEL` | `claude-sonnet-4-6` | Claude generation model |
+| `CLASSIFIER_MODEL` | `claude-haiku-4-5-20251001` | Claude router/classifier model |
+| `GEMINI_API_KEY` | *(required if gemini)* | Google Gemini API key |
+| `GEMINI_MODEL` | `gemini-2.5-pro` | Gemini generation model |
+| `GEMINI_CLASSIFIER_MODEL` | `gemini-2.5-flash-lite-preview-06-17` | Gemini classifier model |
 | `MAX_TOKENS` | `2500` | Max generation tokens |
 | `SIMILARITY_THRESHOLD` | `0.35` | Min cosine similarity; below → out-of-scope |
 | `TOP_K` | `8` | Passages returned to the LLM |
