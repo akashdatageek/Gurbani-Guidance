@@ -200,8 +200,7 @@ Gurbani-Guidance/
 ├── src/
 │   ├── config.py        — all tunables (env-overridable)
 │   ├── corpus.py        — Pydantic models + make_windows()
-│   ├── ingest_pdf.py    — PDF parser → data/shabads.jsonl (primary)
-│   ├── ingest.py        — BaniDB crawler (legacy fallback)
+│   ├── ingest_pdf.py    — PDF parser → data/shabads.jsonl
 │   ├── embed.py         — bge-m3 → ChromaDB
 │   ├── retrieve.py      — hybrid RRF retrieval
 │   ├── verify.py        — 3-layer quote verification
