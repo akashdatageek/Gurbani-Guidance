@@ -1,8 +1,5 @@
 # ── Core dependencies ────────────────────────────────────────────────────────
 
-# BaniDB crawler
-requests>=2.31
-
 # Vector store
 chromadb>=0.5
 
