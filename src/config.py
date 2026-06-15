@@ -14,6 +14,7 @@ DATA_DIR = os.getenv("DATA_DIR", "data")
 RAW_ANGS_DIR = os.path.join(DATA_DIR, "raw_angs")
 SHABADS_FILE = os.path.join(DATA_DIR, "shabads.jsonl")
 CHROMA_DIR = os.path.join(DATA_DIR, "chroma")
+PDF_PATH = os.getenv("PDF_PATH", os.path.join("src", "SriGuruGranthSahibJiDarpanEnglish.pdf"))
 
 # ── Retrieval ────────────────────────────────────────────────────────────────
 WINDOW_SIZE = int(os.getenv("WINDOW_SIZE", "12"))

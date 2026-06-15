@@ -1,6 +1,9 @@
 # ── Core dependencies ────────────────────────────────────────────────────────
 
-# BaniDB crawler
+# PDF parsing (SGGS source)
+pymupdf>=1.24
+
+# BaniDB crawler (kept for fallback)
 requests>=2.31
 
 # Vector store
