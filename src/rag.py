@@ -296,7 +296,7 @@ def _validate_writers() -> None:
     if unmatched:
         logger.warning(
             "Writer name mismatch — these names don't appear in corpus: %s. "
-            "Check BaniDB writer.english field values.",
+            "Check src/ingest_pdf.py writer/bhagat name maps.",
             unmatched,
         )
     _writers_validated = True
