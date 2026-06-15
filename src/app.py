@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI):
 
     if not os.path.exists(SHABADS_FILE):
         logger.warning(
-            "Corpus not found at %s. Run `python -m src.ingest` then `python -m src.embed`.",
+            "Corpus not found at %s. Run `python -m src.ingest_pdf` then `python -m src.embed`.",
             SHABADS_FILE,
         )
     else:
@@ -144,7 +144,7 @@ async def health() -> dict:
 async def stats() -> dict:
     import os
     if not os.path.exists(SHABADS_FILE):
-        raise HTTPException(503, detail="Corpus not built. Run python -m src.ingest first.")
+        raise HTTPException(503, detail="Corpus not built. Run python -m src.ingest_pdf first.")
     return corpus_stats()
 
 
@@ -157,7 +157,7 @@ async def ask_endpoint(request: Request, body: AskRequest) -> AskResponse:
     if not _index_ready:
         raise HTTPException(
             503,
-            detail="Search index not ready. Run `python -m src.ingest` and `python -m src.embed` first.",
+            detail="Search index not ready. Run `python -m src.ingest_pdf` and `python -m src.embed` first.",
         )
 
     from src.rag import ask

@@ -64,7 +64,7 @@ User question  (ਸਵਾਲ)
 
 | | |
 |---|---|
-| **Corpus** | Complete ਸ੍ਰੀ ਗੁਰੂ ਗ੍ਰੰਥ ਸਾਹਿਬ ਜੀ (1430 angs, ~3,900 shabads via [BaniDB](https://banidb.com)) |
+| **Corpus** | Complete ਸ੍ਰੀ ਗੁਰੂ ਗ੍ਰੰਥ ਸਾਹਿਬ ਜੀ — 1430 angs, ~2,890 shabads parsed from `SriGuruGranthSahibJiDarpanEnglish.pdf` (no internet required) |
 | **Multilingual** | English · ਪੰਜਾਬੀ (Gurmukhi) · Romanized Punjabi · Hinglish |
 | **Retrieval** | Hybrid dense (BAAI/bge-m3 + ChromaDB) + sparse (BM25) fused with Reciprocal Rank Fusion |
 | **Quote safety** | 3-layer verification — no fabricated ਗੁਰਬਾਣੀ ever reaches the user |
@@ -73,7 +73,7 @@ User question  (ਸਵਾਲ)
 | **History** | Rolling 10-turn conversation with REHAT stickiness |
 | **API** | FastAPI · rate-limited (10 req/min/IP) · CORS-configurable |
 | **Frontend** | Next.js 14 · Noto Sans Gurmukhi · GitHub Pages auto-deploy |
-| **Container** | Docker + docker-compose (Phase 9) |
+| **Container** | Docker + docker-compose |
 
 ---
 
@@ -89,11 +89,8 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env and set ANTHROPIC_API_KEY
 
-# 3. Crawl BaniDB  (~1.5 hours, resumable — safe to Ctrl-C and re-run)
-python -m src.ingest
-
-# Check cache integrity any time
-python -m src.ingest --verify-cache
+# 3. Parse the SGGS PDF  (~6 seconds, no internet needed)
+python -m src.ingest_pdf
 
 # 4. Build the vector index
 python -m src.embed
@@ -132,7 +129,7 @@ The FastAPI server needs persistent disk for ChromaDB (`data/chroma/`) and ~1.5 
 2. Set env vars: `ANTHROPIC_API_KEY`, `CORS_ORIGINS=https://akashdatageek.github.io`.
 3. Add a volume mounted at `/app/data`.
 4. Build: `pip install -r requirements.txt`; start: `uvicorn src.app:app --host 0.0.0.0 --port $PORT`.
-5. Run ingest + embed once via a Railway "run" command.
+5. Run `python -m src.ingest_pdf` + `python -m src.embed` once via a Railway "run" command.
 
 **GCP Cloud Run** — see `PLAN.md §13` for full notes.
 
@@ -192,7 +189,7 @@ Exits non-zero if retrieval hit-rate < 80 % or any non-adversarial answer contai
 | 3 | **ਮਾਡਲ ਦੱਸਦਾ ਹੈ, ਰਾਜ ਨਹੀਂ ਕਰਦਾ** — The model describes; it never rules | Conduct questions always redirect to the [Sikh Rehat Maryada](https://www.sgpc.net/sikhism/sikh-rehat-maryada-section-one.asp) |
 | 4 | **ਗੁਰਮੁਖੀ ਪਹਿਲਾਂ** — Gurmukhi first, translation second | Original scripture in Gurmukhi script leads every citation |
 | 5 | **ਕੇਵਲ ਸ੍ਰੀ ਗੁਰੂ ਗ੍ਰੰਥ ਸਾਹਿਬ ਜੀ** — SGGS only | Only SGGS content in the `sggs` ChromaDB collection |
-| 6 | **BaniDB ਦਰ ਸੀਮਾ** — BaniDB rate limits respected | ≥0.5 s between requests; resumable crawl with validated cache |
+| 6 | **PDF ਸਰੋਤ** — Offline PDF source | Corpus parsed from `SriGuruGranthSahibJiDarpanEnglish.pdf` — no external API calls needed |
 
 ---
 
@@ -201,17 +198,19 @@ Exits non-zero if retrieval hit-rate < 80 % or any non-adversarial answer contai
 ```
 Gurbani-Guidance/
 ├── src/
-│   ├── config.py       — all tunables (env-overridable)
-│   ├── corpus.py       — Pydantic models + make_windows()
-│   ├── ingest.py       — BaniDB crawler → data/shabads.jsonl
-│   ├── embed.py        — bge-m3 → ChromaDB
-│   ├── retrieve.py     — hybrid RRF retrieval
-│   ├── verify.py       — 3-layer quote verification
-│   ├── rag.py          — 6-agent RAG pipeline
-│   └── app.py          — FastAPI server
-├── web/                — Next.js 14 chat UI
+│   ├── config.py        — all tunables (env-overridable)
+│   ├── corpus.py        — Pydantic models + make_windows()
+│   ├── ingest_pdf.py    — PDF parser → data/shabads.jsonl (primary)
+│   ├── ingest.py        — BaniDB crawler (legacy fallback)
+│   ├── embed.py         — bge-m3 → ChromaDB
+│   ├── retrieve.py      — hybrid RRF retrieval
+│   ├── verify.py        — 3-layer quote verification
+│   ├── rag.py           — 6-agent RAG pipeline
+│   ├── app.py           — FastAPI server
+│   └── SriGuruGranthSahibJiDarpanEnglish.pdf  — SGGS source PDF
+├── web/                 — Next.js 14 chat UI
 │   ├── app/
-│   │   ├── page.tsx    — main chat interface
+│   │   ├── page.tsx     — main chat interface
 │   │   ├── layout.tsx
 │   │   └── components/
 │   └── tailwind.config.ts
@@ -220,14 +219,14 @@ Gurbani-Guidance/
 │   ├── test_verify.py
 │   └── test_router.py
 ├── eval/
-│   └── run_eval.py     — 27 golden questions
+│   └── run_eval.py      — 27 golden questions
 ├── .github/
 │   └── workflows/
-│       └── deploy.yml  — GitHub Pages auto-deploy
+│       └── deploy.yml   — GitHub Pages auto-deploy
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
-└── PLAN.md             — full design spec
+└── PLAN.md              — full design spec
 ```
 
 ---
@@ -242,8 +241,8 @@ Gurbani-Guidance/
 | `MAX_TOKENS` | `2500` | Max generation tokens |
 | `SIMILARITY_THRESHOLD` | `0.35` | Min cosine similarity; below → out-of-scope |
 | `TOP_K` | `8` | Passages returned to the LLM |
+| `PDF_PATH` | `src/SriGuruGranthSahibJiDarpanEnglish.pdf` | Path to SGGS source PDF |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
-| `CRAWL_DELAY` | `0.5` | Seconds between BaniDB requests |
 | `RATE_LIMIT_MAX` | `10` | Max requests per IP per window |
 | `RATE_LIMIT_WINDOW` | `60` | Rate-limit window in seconds |
 

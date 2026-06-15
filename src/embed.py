@@ -71,7 +71,7 @@ def build_index(reset: bool = False) -> None:
 
     if not os.path.exists(SHABADS_FILE):
         raise FileNotFoundError(
-            f"Corpus not found at {SHABADS_FILE}. Run `python -m src.ingest` first."
+            f"Corpus not found at {SHABADS_FILE}. Run `python -m src.ingest_pdf` first."
         )
 
     os.makedirs(CHROMA_DIR, exist_ok=True)
