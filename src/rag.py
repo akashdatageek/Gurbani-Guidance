@@ -679,6 +679,169 @@ def ask(
 
 
 # ---------------------------------------------------------------------------
+# Deep ask — decompose → per-facet retrieval → synthesise
+# ---------------------------------------------------------------------------
+
+def _decompose_question(question: str) -> list[str]:
+    """Break a question into 3–5 focused retrieval facets via a cheap LLM call.
+
+    Returns the facet list, or [question] on any failure (safe fallback).
+    """
+    prompt = (
+        "Given a question about Gurbani, produce 3 to 5 focused search queries "
+        "that together cover all important angles of the topic in Gurbani.\n"
+        "Consider angles such as: definition/nature, cause/origin, "
+        "consequence/effect, remedy/spiritual practice, and related concepts.\n\n"
+        f"Question: {question}\n\n"
+        "Return ONLY a valid JSON array of query strings. "
+        "No explanation, no markdown fences, no extra text."
+    )
+    try:
+        raw = _llm_call(
+            system="You return only a valid JSON array of strings. No preamble, no explanation.",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=300,
+        )
+        raw = raw.strip()
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+        queries = json.loads(raw)
+        if isinstance(queries, list) and queries:
+            return [str(q) for q in queries[:5]]
+    except Exception as exc:
+        logger.warning("Question decomposition failed (%s); using original query.", exc)
+    return [question]
+
+
+def _facet_retrieve(
+    question: str,
+    facets: list[str],
+    k: int,
+    writer: str | None = None,
+    raag: str | None = None,
+    ang_range: tuple[int, int] | None = None,
+) -> list[Passage]:
+    """Retrieve per facet + original query; dedup by shabad_id keeping highest score."""
+    filter_kwargs: dict[str, Any] = {}
+    if writer:
+        filter_kwargs["writer"] = writer
+    if raag:
+        filter_kwargs["raag"] = raag
+    if ang_range:
+        filter_kwargs["ang_range"] = ang_range
+
+    per_facet = max(3, k // max(len(facets), 1))
+    seen: dict[int, Passage] = {}
+
+    for facet in facets:
+        for p in retrieve(facet, k=per_facet, **filter_kwargs):
+            if p.shabad_id not in seen or p.score > seen[p.shabad_id].score:
+                seen[p.shabad_id] = p
+
+    # Anchor with the original question so the top result is always relevant
+    for p in retrieve(question, k=per_facet, **filter_kwargs):
+        if p.shabad_id not in seen or p.score > seen[p.shabad_id].score:
+            seen[p.shabad_id] = p
+
+    return sorted(seen.values(), key=lambda p: p.score, reverse=True)[:k]
+
+
+def deep_ask(
+    question: str,
+    history: list[dict] | None = None,
+    writer: str | None = None,
+    raag: str | None = None,
+    ang_range: tuple[int, int] | None = None,
+    k: int = TOP_K,
+) -> dict:
+    """Deep RAG pipeline: decompose → per-facet retrieval → synthesise.
+
+    Only CONCEPTUAL / SITUATIONAL / COMPARATIVE benefit from facet decomposition.
+    All other question types delegate directly to ask().
+
+    Returns the same dict shape as ask(): {answer, failed_quotes, sources, question_type}.
+    """
+    clean_history = _sanitise_history(history or [])
+    qtype = classify_question(question, history=clean_history)
+    logger.info("Deep question type: %s | question: %.80s", qtype.value, question)
+
+    # Only depth-eligible types proceed; everything else uses standard ask()
+    if qtype not in (QuestionType.CONCEPTUAL, QuestionType.SITUATIONAL, QuestionType.COMPARATIVE):
+        return ask(question, history=history, writer=writer, raag=raag, ang_range=ang_range, k=k)
+
+    retrieval_query = _condense_query(question, clean_history)
+
+    # Step 1 — decompose into facets
+    facets = _decompose_question(retrieval_query)
+    logger.info("Deep facets (%d): %s", len(facets), facets)
+
+    # Step 2 — multi-facet retrieval; cap at k*2 (max 16) to keep context manageable
+    max_passages = min(k * 2, 16)
+
+    if qtype == QuestionType.COMPARATIVE and not any([writer, raag, ang_range]):
+        # COMPARATIVE: use writer-aware retrieval, not facet decomposition
+        passages = _comparative_retrieve(retrieval_query, k=max_passages)
+    else:
+        passages = _facet_retrieve(
+            retrieval_query, facets, k=max_passages,
+            writer=writer, raag=raag, ang_range=ang_range,
+        )
+
+    if not passages:
+        return {
+            "answer": (
+                "I was unable to find relevant passages in Sri Guru Granth Sahib Ji "
+                "for your question. This topic may not be addressed in SGGS, or try "
+                "rephrasing. For guidance, consult a qualified Granthi."
+            ),
+            "failed_quotes": [],
+            "sources": [],
+            "question_type": qtype.value,
+        }
+
+    context_text = _format_passages(passages)
+    user_content = (
+        f"## Relevant passages from Sri Guru Granth Sahib Ji\n\n"
+        f"{context_text}\n\n"
+        f"---\n\n"
+        f"## Question\n\n{question}"
+    )
+
+    messages: list[dict] = list(clean_history)
+    messages.append({"role": "user", "content": user_content})
+
+    try:
+        raw_answer = _llm_call(system=_SYSTEM_PROMPTS[qtype], messages=messages)
+    except Exception as exc:
+        logger.error("LLM API error (%s): %s", PROVIDER, exc)
+        raise
+
+    verified_answer, failed_quotes = verify_answer(raw_answer)
+    if failed_quotes:
+        logger.warning("Removed %d unverified quote(s): %s", len(failed_quotes), failed_quotes)
+
+    seen_shabad: dict[int, dict] = {}
+    for p in passages:
+        sid = p.shabad_id
+        if sid not in seen_shabad or p.score > seen_shabad[sid]["score"]:
+            seen_shabad[sid] = {
+                "shabad_id": sid,
+                "ang": p.ang,
+                "raag": p.raag,
+                "writer": p.writer,
+                "score": round(p.score, 4),
+            }
+    sources = sorted(seen_shabad.values(), key=lambda s: s["score"], reverse=True)
+
+    return {
+        "answer": verified_answer,
+        "failed_quotes": failed_quotes,
+        "sources": sources,
+        "question_type": qtype.value,
+    }
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 

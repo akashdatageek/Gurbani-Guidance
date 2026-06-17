@@ -30,6 +30,7 @@ const MAX_HISTORY_TURNS = 10;
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [deepMode, setDeepMode] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // Scroll to bottom whenever messages change
@@ -53,6 +54,7 @@ export default function Home() {
   const handleSubmit = useCallback(
     async (question: string) => {
       if (!question.trim() || isLoading) return;
+      const isDeep = deepMode;
 
       const userMsg: Message = {
         id: `user-${Date.now()}`,
@@ -79,6 +81,7 @@ export default function Home() {
           body: JSON.stringify({
             question: question.trim(),
             history: history.slice(0, -1), // exclude the just-sent message
+            deep: isDeep,
           }),
         });
 
@@ -123,7 +126,7 @@ export default function Home() {
         setIsLoading(false);
       }
     },
-    [isLoading, messages, buildHistory]
+    [isLoading, messages, buildHistory, deepMode]
   );
 
   return (
@@ -170,9 +173,28 @@ export default function Home() {
       {/* Input */}
       <footer className="flex-none pb-4 pt-2">
         <ChatInput onSubmit={handleSubmit} disabled={isLoading} />
-        <p className="text-center text-xs text-stone-400 mt-2">
-          Answers are grounded in SGGS · Not a substitute for a qualified Granthi
-        </p>
+        <div className="flex items-center justify-between mt-2">
+          <p className="text-xs text-stone-400">
+            Answers are grounded in SGGS · Not a substitute for a qualified Granthi
+          </p>
+          <button
+            type="button"
+            onClick={() => setDeepMode((d) => !d)}
+            title={
+              deepMode
+                ? "Deep Study: ON — more passages, facet decomposition, ~2× slower"
+                : "Deep Study: OFF — click to enable richer, multi-faceted answers"
+            }
+            className={`text-xs px-3 py-1 rounded-full border transition-all select-none
+              ${
+                deepMode
+                  ? "bg-amber-100 text-amber-700 border-amber-300 font-medium"
+                  : "bg-stone-100 text-stone-400 border-stone-200 hover:text-stone-600"
+              }`}
+          >
+            {deepMode ? "Deep Study: On" : "Deep Study: Off"}
+          </button>
+        </div>
       </footer>
     </div>
   );

@@ -122,6 +122,7 @@ class AskRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=2000)
     history: list[HistoryMessage] | None = Field(None, max_length=HISTORY_MAX_TURNS * 2)
     filters: AskFilters | None = None
+    deep: bool = False
 
 
 class AskResponse(BaseModel):
@@ -160,7 +161,7 @@ async def ask_endpoint(request: Request, body: AskRequest) -> AskResponse:
             detail="Search index not ready. Run `python -m src.ingest_pdf` and `python -m src.embed` first.",
         )
 
-    from src.rag import ask
+    from src.rag import ask, deep_ask
 
     kwargs: dict[str, Any] = {}
     if body.history:
@@ -178,19 +179,20 @@ async def ask_endpoint(request: Request, body: AskRequest) -> AskResponse:
     t0 = time.monotonic()
 
     try:
-        result = ask(body.question, **kwargs)
+        result = deep_ask(body.question, **kwargs) if body.deep else ask(body.question, **kwargs)
     except Exception as exc:
         logger.exception("Error in /ask (q_hash=%s)", q_hash)
         raise HTTPException(500, detail="An internal error occurred. Please try again.") from exc
 
     latency_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
-        "ask q_hash=%s type=%s sources=%d failed_quotes=%d latency_ms=%d",
+        "ask q_hash=%s type=%s sources=%d failed_quotes=%d latency_ms=%d deep=%s",
         q_hash,
         result.get("question_type"),
         len(result.get("sources", [])),
         len(result.get("failed_quotes", [])),
         latency_ms,
+        body.deep,
     )
 
     return AskResponse(
