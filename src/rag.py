@@ -69,32 +69,34 @@ def _get_gemini_client() -> Any:
     global _gemini_client
     if _gemini_client is None:
         try:
-            import google.generativeai as genai
+            import google.genai as genai
         except ImportError as exc:
-            raise ImportError("Run: pip install google-generativeai") from exc
+            raise ImportError("Run: pip install google-genai") from exc
         if not GEMINI_API_KEY:
             raise RuntimeError("GEMINI_API_KEY is not set. Add it to .env or the environment.")
-        genai.configure(api_key=GEMINI_API_KEY)
-        _gemini_client = genai
+        _gemini_client = genai.Client(api_key=GEMINI_API_KEY)
     return _gemini_client
 
 
 def _llm_call(system: str, messages: list[dict], max_tokens: int = MAX_TOKENS) -> str:
     """Unified LLM call — routes to Anthropic or Gemini based on PROVIDER."""
     if PROVIDER == "gemini":
-        genai = _get_gemini_client()
-        import google.generativeai as _genai
-        history_for_gemini = []
-        for m in messages[:-1]:
+        import google.genai as genai
+        from google.genai import types
+        client = _get_gemini_client()
+        contents = []
+        for m in messages:
             role = "user" if m["role"] == "user" else "model"
-            history_for_gemini.append({"role": role, "parts": [m["content"]]})
-        model = _genai.GenerativeModel(
-            model_name=GEMINI_MODEL,
-            system_instruction=system,
+            contents.append(types.Content(role=role, parts=[types.Part(text=m["content"])]))
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system,
+                max_output_tokens=max_tokens,
+            ),
         )
-        chat = model.start_chat(history=history_for_gemini)
-        resp = chat.send_message(messages[-1]["content"])
-        return resp.text
+        return response.text
     else:
         client = _get_anthropic_client()
         resp = client.messages.create(
@@ -109,11 +111,15 @@ def _llm_call(system: str, messages: list[dict], max_tokens: int = MAX_TOKENS) -
 def _llm_classify_call(prompt: str) -> str:
     """Cheap single-turn LLM call for classification."""
     if PROVIDER == "gemini":
-        import google.generativeai as genai
-        _get_gemini_client()
-        model = genai.GenerativeModel(model_name=GEMINI_CLASSIFIER_MODEL)
-        resp = model.generate_content(prompt)
-        return resp.text.strip().upper()
+        import google.genai as genai
+        from google.genai import types
+        client = _get_gemini_client()
+        response = client.models.generate_content(
+            model=GEMINI_CLASSIFIER_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(max_output_tokens=10),
+        )
+        return response.text.strip().upper()
     else:
         client = _get_anthropic_client()
         resp = client.messages.create(
