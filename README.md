@@ -31,7 +31,7 @@ User question  (ਸਵਾਲ)
                                       │
                                       ▼
                              ┌──────────────────┐
-                             │  claude-sonnet   │
+                             │  claude/ Gemini  │
                              │  (4000 tokens)   │
                              └────────┬─────────┘
                                       │ raw answer
