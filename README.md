@@ -32,7 +32,7 @@ User question  (ਸਵਾਲ)
                                       ▼
                              ┌──────────────────┐
                              │  claude-sonnet   │
-                             │  (2500 tokens)   │
+                             │  (4000 tokens)   │
                              └────────┬─────────┘
                                       │ raw answer
                                       ▼
@@ -58,6 +58,21 @@ User question  (ਸਵਾਲ)
 | **Fabrication** — ਨਿਰਮਾਣ | "Write a shabad…", "Compose a hymn…" | Immediate, graceful refusal — no invented ਗੁਰਮੁਖੀ |
 | **Out of scope** — ਬਾਹਰ | "Birth story of Guru Nanak", "History of Sikh empire" | Redirect — biographical/historical facts lie outside SGGS |
 
+### ਡੂੰਘਾ ਅਧਿਐਨ — Deep Study Mode
+
+An optional mode (off by default; toggle in the web UI, or `"deep": true` in the
+`/ask` payload) that trades latency for depth on substantive questions:
+
+1. **Decompose** the question into 3–5 focused facets (one cheap LLM call) —
+   e.g. *haumai* → its nature, its consequence, its remedy, manmukh vs. gurmukh.
+2. **Retrieve per facet** + the original query, deduplicated by shabad (up to 16
+   passages vs. 8 in standard mode).
+3. **Synthesise** from the wider passage set through the same verified pipeline.
+
+Only **Conceptual**, **Situational**, and **Comparative** questions use the depth
+path; Rehat, Fabrication, and Out-of-scope delegate straight to the standard flow,
+so refusals stay fast.
+
 ---
 
 ## ਮੁੱਖ ਵਿਸ਼ੇਸ਼ਤਾਵਾਂ — Key Features
@@ -70,9 +85,11 @@ User question  (ਸਵਾਲ)
 | **Quote safety** | 3-layer verification — no fabricated ਗੁਰਬਾਣੀ ever reaches the user |
 | **Chunking** | Shabad-scoped 12-line windows, 2-line overlap — never crosses ਸ਼ਬਦ boundary |
 | **Routing** | 6-agent system; LLM (haiku) fallback for non-English queries |
+| **Deep Study** | Optional mode — decomposes a question into 3–5 facets, retrieves per facet (up to 16 passages) for richer, multi-angle answers |
+| **Providers** | Anthropic Claude (default) or Google Gemini — switch with a single `PROVIDER` env var |
 | **History** | Rolling 10-turn conversation with REHAT stickiness |
 | **API** | FastAPI · rate-limited (10 req/min/IP) · CORS-configurable |
-| **Frontend** | Next.js 14 · Noto Sans Gurmukhi · GitHub Pages auto-deploy |
+| **Frontend** | Next.js 14 · Noto Sans Gurmukhi · Markdown rendering · GitHub Pages auto-deploy |
 | **Container** | Docker + docker-compose |
 
 ---
@@ -240,8 +257,8 @@ Gurbani-Guidance/
 | `CLASSIFIER_MODEL` | `claude-haiku-4-5-20251001` | Claude router/classifier model |
 | `GEMINI_API_KEY` | *(required if gemini)* | Google Gemini API key |
 | `GEMINI_MODEL` | `gemini-2.5-pro` | Gemini generation model |
-| `GEMINI_CLASSIFIER_MODEL` | `gemini-2.5-flash-lite-preview-06-17` | Gemini classifier model |
-| `MAX_TOKENS` | `2500` | Max generation tokens |
+| `GEMINI_CLASSIFIER_MODEL` | `gemini-2.5-flash` | Gemini classifier model |
+| `MAX_TOKENS` | `4000` | Max generation tokens |
 | `SIMILARITY_THRESHOLD` | `0.35` | Min cosine similarity; below → out-of-scope |
 | `TOP_K` | `8` | Passages returned to the LLM |
 | `PDF_PATH` | `src/SriGuruGranthSahibJiDarpanEnglish.pdf` | Path to SGGS source PDF |
