@@ -96,7 +96,14 @@ def _llm_call(system: str, messages: list[dict], max_tokens: int = MAX_TOKENS) -
                 max_output_tokens=max_tokens,
             ),
         )
-        return response.text
+        try:
+            return response.text
+        except ValueError:
+            logger.warning("Gemini response blocked by safety filters for this query.")
+            return (
+                "I was unable to generate a response for this question. "
+                "Please rephrase your question or consult a qualified Granthi for guidance."
+            )
     else:
         client = _get_anthropic_client()
         resp = client.messages.create(
@@ -184,13 +191,16 @@ _COMPARATIVE_RE = re.compile(
 
 _SITUATIONAL_RE = re.compile(
     r"\bi(?:'m| am)\s+(?:feeling|going\s+through|struggling|suffering|grieving|"
-    r"dealing\s+with|facing|lost|broken|alone|scared|helpless|hopeless|overwhelmed)\b|"
-    r"\bi\s+feel\s+(?:so\s+)?(?:lost|alone|scared|helpless|overwhelmed|hopeless|broken|sad|empty)\b|"
+    r"dealing\s+with|facing|lost|broken|alone|scared|helpless|hopeless|overwhelmed|"
+    r"stuck|confused|not\s+sure|unsure|worried|stressed|anxious|depressed|tired\s+of)\b|"
+    r"\bi\s+feel\s+(?:so\s+)?(?:lost|alone|scared|helpless|overwhelmed|hopeless|broken|sad|empty|stuck|confused)\b|"
     r"\bi(?:'ve| have)\s+(?:been\s+(?:feeling|struggling)|lost\s+(?:my|a\s+\w+)|"
-    r"failed|made\s+a\s+mistake)\b|"
-    r"\bhelp\s+me\s+(?:with|through|deal\s+with|cope\s+with|get\s+through)\b|"
+    r"failed|made\s+a\s+mistake|no\s+direction|lost\s+my\s+way)\b|"
+    r"\bhelp\s+me\s+(?:with|through|deal\s+with|cope\s+with|get\s+through|find\s+(?:my\s+)?(?:way|purpose|direction))\b|"
     r"\bmy\s+(?:grief|loss|pain|suffering|depression|anxiety|fear|anger|"
-    r"guilt|loneliness|sorrow|death\s+of|divorce)\b",
+    r"guilt|loneliness|sorrow|death\s+of|divorce)\b|"
+    r"\b(?:stuck\s+in\s+life|confused\s+(?:about|what|in)|what\s+(?:should|do)\s+i\s+do|"
+    r"no\s+(?:direction|purpose|meaning)|don['']?t\s+know\s+(?:what|how|where)\s+to)\b",
     re.I,
 )
 
