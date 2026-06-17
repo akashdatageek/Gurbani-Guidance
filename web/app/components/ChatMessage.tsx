@@ -1,5 +1,6 @@
 "use client";
 
+import ReactMarkdown from "react-markdown";
 import type { Message, Source } from "../page";
 
 interface ChatMessageProps {
@@ -49,27 +50,8 @@ function FailedQuoteNotice({ count }: { count: number }) {
   );
 }
 
-/** Render answer text: plain text is shown as-is. */
-function AnswerText({ content }: { content: string }) {
-  // Split on double newlines for paragraphs
-  const paragraphs = content.split(/\n{2,}/).filter(Boolean);
-  if (paragraphs.length <= 1) {
-    return <RenderLine text={content} />;
-  }
-  return (
-    <>
-      {paragraphs.map((para, i) => (
-        <p key={i} className="mb-3 last:mb-0">
-          <RenderLine text={para} />
-        </p>
-      ))}
-    </>
-  );
-}
-
-/** Render a single line, detecting Gurmukhi Unicode block (U+0A00–U+0A7F). */
+/** Detect Gurmukhi Unicode block (U+0A00–U+0A7F) and apply the correct font. */
 function RenderLine({ text }: { text: string }) {
-  // Segment text into Gurmukhi and Latin spans
   const GURMUKHI_RE = /[਀-੿]+(?:\s[਀-੿]+)*/g;
   const segments: { gurmukhi: boolean; text: string }[] = [];
   let lastIndex = 0;
@@ -98,6 +80,75 @@ function RenderLine({ text }: { text: string }) {
         )
       )}
     </>
+  );
+}
+
+/** Process ReactNode children: apply RenderLine to string leaves. */
+function withGurmukhi(children: React.ReactNode): React.ReactNode {
+  if (typeof children === "string") return <RenderLine text={children} />;
+  if (Array.isArray(children)) {
+    return children.map((child, i) =>
+      typeof child === "string" ? <RenderLine key={i} text={child} /> : child
+    );
+  }
+  return children;
+}
+
+/** Render Markdown answer with Gurmukhi font detection. */
+function AnswerText({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      components={{
+        p: ({ children }) => (
+          <p className="mb-3 last:mb-0 leading-relaxed">{withGurmukhi(children)}</p>
+        ),
+        h1: ({ children }) => (
+          <h1 className="font-semibold text-stone-800 text-base mt-4 mb-1">{withGurmukhi(children)}</h1>
+        ),
+        h2: ({ children }) => (
+          <h2 className="font-semibold text-stone-800 text-base mt-4 mb-1">{withGurmukhi(children)}</h2>
+        ),
+        h3: ({ children }) => (
+          <h3 className="font-semibold text-stone-800 mt-3 mb-1">{withGurmukhi(children)}</h3>
+        ),
+        h4: ({ children }) => (
+          <h4 className="font-semibold text-stone-700 mt-3 mb-1">{withGurmukhi(children)}</h4>
+        ),
+        strong: ({ children }) => (
+          <strong className="font-semibold text-stone-800">{withGurmukhi(children)}</strong>
+        ),
+        em: ({ children }) => (
+          <em className="italic text-stone-600">{withGurmukhi(children)}</em>
+        ),
+        ul: ({ children }) => (
+          <ul className="list-disc pl-5 space-y-1 mb-3">{children}</ul>
+        ),
+        ol: ({ children }) => (
+          <ol className="list-decimal pl-5 space-y-1 mb-3">{children}</ol>
+        ),
+        li: ({ children }) => (
+          <li className="leading-relaxed">{withGurmukhi(children)}</li>
+        ),
+        blockquote: ({ children }) => (
+          <blockquote className="border-l-2 border-amber-400 pl-3 my-2 text-stone-600 italic">
+            {children}
+          </blockquote>
+        ),
+        a: ({ href, children }) => (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-amber-700 underline underline-offset-2 hover:text-amber-900"
+          >
+            {children}
+          </a>
+        ),
+        hr: () => <hr className="border-stone-200 my-3" />,
+      }}
+    >
+      {content}
+    </ReactMarkdown>
   );
 }
 
