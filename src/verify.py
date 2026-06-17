@@ -146,6 +146,8 @@ def verify_answer(answer: str) -> tuple[str, list[str]]:
     # ── Pass 2: check untagged Gurmukhi runs (≥4 words) ────────────────────
     def _check_untagged(m: re.Match) -> str:
         run = m.group(0).strip()
+        if "॥" not in run and "।" not in run:
+            return run  # plain Punjabi prose — not a scripture quote
         words = [w for w in _GURMUKHI_WORD_RE.findall(run) if w]
         if len(words) < 4:
             return run  # short terms / single words — pass through
