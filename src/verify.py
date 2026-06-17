@@ -143,12 +143,16 @@ def verify_answer(answer: str) -> tuple[str, list[str]]:
 
     cleaned = _TUK_RE.sub(_replace_tuk, answer)
 
-    # ── Pass 2: check untagged Gurmukhi runs (≥4 words) ────────────────────
+    # ── Pass 2: check untagged Gurmukhi runs (verse-style only) ─────────────
+    # Only flag runs containing ॥ or । (verse-end markers).
+    # Plain Punjabi prose in Gurmukhi script is left untouched.
     def _check_untagged(m: re.Match) -> str:
         run = m.group(0).strip()
+        if "॥" not in run and "।" not in run:
+            return run  # plain Punjabi prose — not a scripture quote
         words = [w for w in _GURMUKHI_WORD_RE.findall(run) if w]
         if len(words) < 4:
-            return run  # short terms / single words — pass through
+            return run  # short terms — pass through
         if _is_in_corpus(run, corpus) or _is_substring_of_corpus_line(run, corpus):
             return run  # genuine Gurbani
         failed_quotes.append(run)
