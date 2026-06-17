@@ -97,7 +97,7 @@ def _llm_call(system: str, messages: list[dict], max_tokens: int = MAX_TOKENS) -
             ),
         )
         try:
-            return response.text
+            return response.text or ""
         except ValueError:
             logger.warning("Gemini response blocked by safety filters for this query.")
             return (
@@ -115,26 +115,43 @@ def _llm_call(system: str, messages: list[dict], max_tokens: int = MAX_TOKENS) -
         return resp.content[0].text
 
 
-def _llm_classify_call(prompt: str) -> str:
-    """Cheap single-turn LLM call for classification."""
+def _llm_lightweight_call(prompt: str, max_tokens: int) -> str:
+    """Cheap single-turn call on the classifier model. Returns raw text ("" if empty).
+
+    For Gemini, 'thinking' is disabled so the whole token budget goes to output —
+    otherwise reasoning models (e.g. gemini-2.5-flash) can exhaust a small budget
+    on internal thinking and return no text at all.
+    """
     if PROVIDER == "gemini":
-        import google.genai as genai
         from google.genai import types
         client = _get_gemini_client()
+        config_kwargs: dict[str, Any] = {"max_output_tokens": max_tokens}
+        try:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+        except Exception:
+            pass  # older SDK without ThinkingConfig — budget alone must suffice
         response = client.models.generate_content(
             model=GEMINI_CLASSIFIER_MODEL,
             contents=prompt,
-            config=types.GenerateContentConfig(max_output_tokens=10),
+            config=types.GenerateContentConfig(**config_kwargs),
         )
-        return response.text.strip().upper()
+        try:
+            return response.text or ""
+        except ValueError:
+            return ""
     else:
         client = _get_anthropic_client()
         resp = client.messages.create(
             model=CLASSIFIER_MODEL,
-            max_tokens=10,
+            max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
-        return resp.content[0].text.strip().upper()
+        return resp.content[0].text
+
+
+def _llm_classify_call(prompt: str) -> str:
+    """Cheap single-turn LLM call for classification."""
+    return _llm_lightweight_call(prompt, max_tokens=16).strip().upper()
 
 
 # ---------------------------------------------------------------------------
@@ -697,12 +714,9 @@ def _decompose_question(question: str) -> list[str]:
         "No explanation, no markdown fences, no extra text."
     )
     try:
-        raw = _llm_call(
-            system="You return only a valid JSON array of strings. No preamble, no explanation.",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=300,
-        )
-        raw = raw.strip()
+        raw = _llm_lightweight_call(prompt, max_tokens=512).strip()
+        if not raw:
+            raise ValueError("empty decomposition response")
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
         queries = json.loads(raw)
