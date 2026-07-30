@@ -353,43 +353,51 @@ _KNOWN_WRITERS = [
     "Bhat Mathura", "Bhat Harbans", "Bhat Tal",
 ]
 
-# Build patterns using the *unique* name token (Nanak, Arjan, Kabir…) not
-# the category word (Guru, Bhagat) which would match almost every question
-_WRITER_PATTERNS: dict[str, re.Pattern] = {}
-for _w in _KNOWN_WRITERS:
-    _parts = _w.replace(" Ji", "").replace("Bhat ", "").split()
-    # Use the last distinctive word; skip common prefixes
-    _skip = {"Guru", "Bhagat", "Bhat", "Dev"}
-    _unique_parts = [p for p in _parts if p not in _skip]
-    if _unique_parts:
-        # Match any of the distinctive tokens
-        _pattern = "|".join(r"\b" + re.escape(p) + r"\b" for p in _unique_parts)
-        _WRITER_PATTERNS[_w] = re.compile(_pattern, re.I)
+# Category/honorific words that would match almost every question — the
+# pattern for each writer is built from the remaining distinctive tokens
+# (Nanak, Arjan, Kabir, Farid, …).
+_WRITER_SKIP_TOKENS = {
+    "Guru", "Bhagat", "Bhat", "Bhatt", "Bhai", "Baba",
+    "Sheikh", "Shaikh", "Dev", "Ji", "Sahib", "The",
+}
 
-# Validate writer names against corpus at startup (lazy, logged once)
-_writers_validated = False
+# Patterns are built lazily from the writers ACTUALLY present in the corpus,
+# so retrieval filters always use names that exist in ChromaDB metadata.
+# _KNOWN_WRITERS is only the fallback when no corpus is on disk.
+_writer_patterns_cache: dict[str, re.Pattern] | None = None
 
 
-def _validate_writers() -> None:
-    global _writers_validated
-    if _writers_validated or not os.path.exists(SHABADS_FILE):
-        return
+def _build_writer_patterns(writers: list[str]) -> dict[str, re.Pattern]:
+    patterns: dict[str, re.Pattern] = {}
+    for w in writers:
+        parts = [p for p in re.split(r"[\s,]+", w) if p]
+        unique_parts = [p for p in parts if p not in _WRITER_SKIP_TOKENS and len(p) > 2]
+        if unique_parts:
+            pattern = "|".join(r"\b" + re.escape(p) + r"\b" for p in unique_parts)
+            patterns[w] = re.compile(pattern, re.I)
+    return patterns
+
+
+def _get_writer_patterns() -> dict[str, re.Pattern]:
+    global _writer_patterns_cache
+    if _writer_patterns_cache is not None:
+        return _writer_patterns_cache
     corpus_writers: set[str] = set()
-    with open(SHABADS_FILE, "r", encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                try:
-                    corpus_writers.add(json.loads(line).get("writer", ""))
-                except Exception:
-                    pass
-    unmatched = [w for w in _KNOWN_WRITERS if w not in corpus_writers]
-    if unmatched:
-        logger.warning(
-            "Writer name mismatch — these names don't appear in corpus: %s. "
-            "Check src/ingest_pdf.py writer/bhagat name maps.",
-            unmatched,
-        )
-    _writers_validated = True
+    if os.path.exists(SHABADS_FILE):
+        with open(SHABADS_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        w = json.loads(line).get("writer", "")
+                        if w and w != "Unknown":
+                            corpus_writers.add(w)
+                    except Exception:
+                        pass
+    if not corpus_writers:
+        logger.warning("No corpus writers found — using static writer list for comparative routing.")
+        corpus_writers = set(_KNOWN_WRITERS)
+    _writer_patterns_cache = _build_writer_patterns(sorted(corpus_writers))
+    return _writer_patterns_cache
 
 
 # ---------------------------------------------------------------------------
@@ -518,8 +526,8 @@ If you have a question about what Gurbani teaches spiritually, I'm here to help.
 
 def _comparative_retrieve(question: str, k: int) -> list[Passage]:
     """Retrieve per mentioned writer then merge, for comparative questions."""
-    _validate_writers()
-    mentioned = [w for w, pat in _WRITER_PATTERNS.items() if pat.search(question)]
+    writer_patterns = _get_writer_patterns()
+    mentioned = [w for w, pat in writer_patterns.items() if pat.search(question)]
 
     if mentioned:
         per_writer_k = max(3, k // max(len(mentioned), 1))

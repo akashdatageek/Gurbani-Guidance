@@ -79,7 +79,8 @@ so refusals stay fast.
 
 | | |
 |---|---|
-| **Corpus** | Complete ਸ੍ਰੀ ਗੁਰੂ ਗ੍ਰੰਥ ਸਾਹਿਬ ਜੀ — 1430 angs, ~2,890 shabads parsed from `SriGuruGranthSahibJiDarpanEnglish.pdf` (no internet required) |
+| **Corpus** | Complete ਸ੍ਰੀ ਗੁਰੂ ਗ੍ਰੰਥ ਸਾਹਿਬ ਜੀ — 1430 angs, ~5,900 shabads from the [BaniDB v2 API](https://api.banidb.com/v2/api-docs/) (proofread ground truth, canonical shabad boundaries); offline PDF parser available as fallback |
+| **Data quality** | `python -m src.audit` — structural checks + reference-tuk verification against known-good Gurbani; non-zero exit for CI |
 | **Multilingual** | English · ਪੰਜਾਬੀ (Gurmukhi) · Romanized Punjabi · Hinglish |
 | **Retrieval** | Hybrid dense (BAAI/bge-m3 + ChromaDB) + sparse (BM25) fused with Reciprocal Rank Fusion |
 | **Quote safety** | 3-layer verification — no fabricated ਗੁਰਬਾਣੀ ever reaches the user |
@@ -106,10 +107,12 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env and set ANTHROPIC_API_KEY
 
-# 3. Parse the SGGS PDF  (~6 seconds, no internet needed)
-python -m src.ingest_pdf
+# 3. Build the corpus from BaniDB  (primary source; resumable, ~15 min)
+python -m src.ingest
+#    Offline fallback (lower fidelity — see GAPS.md): python -m src.ingest_pdf
 
-# 4. Build the vector index
+# 4. Validate corpus accuracy, then build the vector index
+python -m src.audit
 python -m src.embed
 
 # 5. Test the CLI  (ਪੁੱਛੋ — ask)
@@ -146,7 +149,7 @@ The FastAPI server needs persistent disk for ChromaDB (`data/chroma/`) and ~1.5 
 2. Set env vars: `ANTHROPIC_API_KEY`, `CORS_ORIGINS=https://akashdatageek.github.io`.
 3. Add a volume mounted at `/app/data`.
 4. Build: `pip install -r requirements.txt`; start: `uvicorn src.app:app --host 0.0.0.0 --port $PORT`.
-5. Run `python -m src.ingest_pdf` + `python -m src.embed` once via a Railway "run" command.
+5. Run `python -m src.ingest` + `python -m src.audit` + `python -m src.embed` once via a Railway "run" command.
 
 **GCP Cloud Run** — see `PLAN.md §13` for full notes.
 
@@ -206,7 +209,8 @@ Exits non-zero if retrieval hit-rate < 80 % or any non-adversarial answer contai
 | 3 | **ਮਾਡਲ ਦੱਸਦਾ ਹੈ, ਰਾਜ ਨਹੀਂ ਕਰਦਾ** — The model describes; it never rules | Conduct questions always redirect to the [Sikh Rehat Maryada](https://www.sgpc.net/sikhism/sikh-rehat-maryada-section-one.asp) |
 | 4 | **ਗੁਰਮੁਖੀ ਪਹਿਲਾਂ** — Gurmukhi first, translation second | Original scripture in Gurmukhi script leads every citation |
 | 5 | **ਕੇਵਲ ਸ੍ਰੀ ਗੁਰੂ ਗ੍ਰੰਥ ਸਾਹਿਬ ਜੀ** — SGGS only | Only SGGS content in the `sggs` ChromaDB collection |
-| 6 | **PDF ਸਰੋਤ** — Offline PDF source | Corpus parsed from `SriGuruGranthSahibJiDarpanEnglish.pdf` — no external API calls needed |
+| 6 | **BaniDB ਸਰੋਤ** — BaniDB is authoritative | Corpus built from the proofread [BaniDB v2 API](https://api.banidb.com/v2/api-docs/); the offline PDF parser is fallback only |
+| 7 | **ਸ਼ੁੱਧਤਾ ਜਾਂਚ** — Corpus must pass the audit | `python -m src.audit` validates ang coverage, writers, raags, and reference tuks before the corpus is embedded |
 
 ---
 
@@ -217,7 +221,10 @@ Gurbani-Guidance/
 ├── src/
 │   ├── config.py        — all tunables (env-overridable)
 │   ├── corpus.py        — Pydantic models + make_windows()
-│   ├── ingest_pdf.py    — PDF parser → data/shabads.jsonl
+│   ├── banidb.py        — BaniDB v2 API client (ang/shabad/search)
+│   ├── ingest.py        — BaniDB crawler → data/shabads.jsonl (PRIMARY)
+│   ├── audit.py         — corpus data-quality audit (CI gate)
+│   ├── ingest_pdf.py    — PDF parser → data/shabads.jsonl (offline fallback)
 │   ├── embed.py         — bge-m3 → ChromaDB
 │   ├── retrieve.py      — hybrid RRF retrieval
 │   ├── verify.py        — 3-layer quote verification
