@@ -142,8 +142,10 @@ def build_shabads(start: int = 1, end: int = 1430) -> None:
 
             first = verses_sorted[0]
             ang = banidb.verse_ang(first)
-            raag = banidb.verse_raag(first) or "Unknown"
-            writer = banidb.verse_writer(first) or "Unknown"
+            # Header lines (e.g. "ਸਲੋਕੁ ॥") open many shabads with null
+            # writer/raag — take the first verse that carries each field.
+            raag = next((r for v in verses_sorted if (r := banidb.verse_raag(v))), "Unknown")
+            writer = next((w for v in verses_sorted if (w := banidb.verse_writer(v))), "Unknown")
 
             lines = []
             gurmukhi_parts: list[str] = []

@@ -174,9 +174,14 @@ def audit_corpus(path: str = SHABADS_FILE) -> AuditResult:
     if unknown_raags:
         r.warn(f"{unknown_raags} shabads have empty/Unknown raag")
 
-    # 7 — reference tuks must match verbatim
+    # 7 — reference tuks must match verbatim. A corpus line may carry a
+    # trailing pauri/verse numeral the reference omits (e.g. "…ਜਾਈ ॥੫॥" vs
+    # "…ਜਾਈ ॥"), so prefix equality counts as verbatim.
     corpus_set = {normalize_gurmukhi(ln.get("gurmukhi", "")) for ln in lines}
-    missing_refs = [t for t in REFERENCE_TUKS if normalize_gurmukhi(t) not in corpus_set]
+    def _has_ref(ref: str) -> bool:
+        norm_ref = normalize_gurmukhi(ref)
+        return norm_ref in corpus_set or any(c.startswith(norm_ref) for c in corpus_set)
+    missing_refs = [t for t in REFERENCE_TUKS if not _has_ref(t)]
     if missing_refs:
         for t in missing_refs:
             r.fail(f"Reference tuk missing/verbatim-mismatched (Ang {REFERENCE_TUKS[t]}): {t}")
@@ -207,13 +212,20 @@ def audit_online(path: str = SHABADS_FILE, sample: int = 25, seed: int = 42) -> 
 
     mismatches = 0
     for ln in picked:
-        # Search by the line with punctuation/vishraam markers stripped
-        query = re.sub(r"[॥।]+|\s*[੦-੯]+\s*$", " ", ln["gurmukhi"]).strip()
-        query = re.sub(r"\s+", " ", query)
-        if not query:
+        # Build a full-word query: drop dandis, ALL Gurmukhi digits (pauri and
+        # verse numerals appear mid-line, e.g. "॥੧॥ ਰਹਾਉ ॥"), and the ਰਹਾਉ
+        # marker; cap at 6 words — full-word search ANDs terms, and rare
+        # orthographic marks in long tails cause false negatives.
+        query = re.sub(r"[॥।]+|[੦-੯]+|\bਰਹਾਉ\b", " ", ln["gurmukhi"])
+        words = query.split()
+        if len(words) < 3:
+            # Section headers ("ਮਃ ੫ ॥", "ਸਲੋਕ ਮਃ ੪ ॥") reduce to 1–2 generic
+            # words repeated hundreds of times — full-word search cannot pin
+            # them to one occurrence, so they are not a meaningful sample.
             continue
+        query = " ".join(words[:6])
         try:
-            resp = banidb.search(query, searchtype=banidb.SEARCH_FULL_WORD_GURMUKHI, results=10)
+            resp = banidb.search(query, searchtype=banidb.SEARCH_FULL_WORD_GURMUKHI, results=20)
         except RuntimeError as exc:
             r.warn(f"BaniDB search failed for a sample line ({exc}); skipping")
             continue
