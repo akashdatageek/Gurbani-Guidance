@@ -29,7 +29,7 @@ from src.config import (
     WINDOW_OVERLAP,
     WINDOW_SIZE,
 )
-from src.corpus import load_shabads, make_windows
+from src.corpus import ensure_corpus, load_shabads, make_windows
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,7 @@ def init() -> None:
     except ImportError as exc:
         raise ImportError("Run: pip install -r requirements.txt") from exc
 
+    ensure_corpus(SHABADS_FILE)
     if not os.path.exists(SHABADS_FILE):
         raise FileNotFoundError(
             f"Corpus not found at {SHABADS_FILE}. Run `python -m src.ingest` "

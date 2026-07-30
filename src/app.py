@@ -49,10 +49,15 @@ async def lifespan(app: FastAPI):
         logger.warning("ANTHROPIC_API_KEY is not set — /ask will fail until it is configured.")
 
     if RETRIEVAL_MODE == "banidb":
-        # Live BaniDB API mode (default): no crawler, no corpus, no local index.
+        # Live BaniDB API mode: no local corpus or index needed.
         _index_ready = True
         logger.info("Retrieval mode: live BaniDB API — no local index required.")
-    elif not os.path.exists(SHABADS_FILE):
+        yield
+        return
+
+    from src.corpus import ensure_corpus
+    ensure_corpus(SHABADS_FILE)
+    if not os.path.exists(SHABADS_FILE):
         logger.warning(
             "Corpus not found at %s. Run the one-time BaniDB sync: "
             "`python -m src.ingest && python -m src.audit && python -m src.embed` "

@@ -33,7 +33,7 @@ import sys
 from collections import Counter
 
 from src.config import SHABADS_FILE
-from src.corpus import normalize_gurmukhi
+from src.corpus import ensure_corpus, normalize_gurmukhi
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -82,6 +82,7 @@ class AuditResult:
 
 
 def _load(path: str) -> list[dict]:
+    ensure_corpus(path)
     shabads = []
     with open(path, "r", encoding="utf-8") as f:
         for raw in f:

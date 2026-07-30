@@ -47,7 +47,7 @@ from src.config import (
     TOP_K,
 )
 from src.config import RETRIEVAL_MODE
-from src.corpus import normalize_gurmukhi
+from src.corpus import ensure_corpus, normalize_gurmukhi
 from src.retrieve import Passage
 from src.verify import verify_answer
 
@@ -385,6 +385,7 @@ def _get_writer_patterns() -> dict[str, re.Pattern]:
     if _writer_patterns_cache is not None:
         return _writer_patterns_cache
     corpus_writers: set[str] = set()
+    ensure_corpus(SHABADS_FILE)
     if os.path.exists(SHABADS_FILE):
         with open(SHABADS_FILE, "r", encoding="utf-8") as f:
             for line in f:

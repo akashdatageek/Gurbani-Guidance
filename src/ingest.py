@@ -171,6 +171,16 @@ def build_shabads(start: int = 1, end: int = 1430) -> None:
                 if translations.get("ssk") and translations["ssk"] != e:
                     line_obj["translation_en_ssk"] = translations["ssk"]
 
+                # Punjabi vyakhya/teeka (Unicode): Sahib Singh Darpan, Faridkot
+                # Teeka, and Sahib Singh pad-arth (word meanings)
+                vyakhya = banidb.verse_vyakhya(v)
+                if vyakhya.get("ss"):
+                    line_obj["vyakhya_ss"] = vyakhya["ss"]
+                if vyakhya.get("ft"):
+                    line_obj["vyakhya_ft"] = vyakhya["ft"]
+                if vyakhya.get("pss"):
+                    line_obj["vyakhya_pss"] = vyakhya["pss"]
+
                 lines.append(line_obj)
                 gurmukhi_parts.append(g)
                 translit_parts.append(t)

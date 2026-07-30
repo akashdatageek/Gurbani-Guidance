@@ -30,7 +30,7 @@ import unicodedata
 from functools import lru_cache
 
 from src.config import SHABADS_FILE
-from src.corpus import normalize_gurmukhi
+from src.corpus import ensure_corpus, normalize_gurmukhi
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,7 @@ _corpus_mtime: float = 0.0
 def _get_corpus_lines() -> dict[str, set[int]]:
     """Load corpus as {normalized_gurmukhi: {ang, …}}.  Auto-invalidates on file change."""
     global _corpus_mtime
+    ensure_corpus(SHABADS_FILE)
     if not os.path.exists(SHABADS_FILE):
         logger.warning("Corpus not found — verification will reject all quotes.")
         return {}

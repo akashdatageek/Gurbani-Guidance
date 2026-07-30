@@ -185,6 +185,28 @@ def verse_translations_en(v: dict) -> dict[str, str]:
     return out
 
 
+def verse_vyakhya(v: dict) -> dict[str, str]:
+    """Punjabi vyakhya/teeka per verse, keyed by source id.
+
+    Known sources (confirmed against the live v2 API):
+      ss  — Prof. Sahib Singh, SGGS Darpan (vyakhya)
+      ft  — Faridkot Wala Teeka
+      pss — Prof. Sahib Singh pad-arth (word meanings)
+      bdb — BaniDB Punjabi rendering
+    Values are Unicode Gurmukhi (the legacy-font `gurmukhi` variant is ignored).
+    """
+    block = v.get("translation")
+    pu = block.get("pu") if isinstance(block, dict) else None
+    out: dict[str, str] = {}
+    if isinstance(pu, dict):
+        for key, val in pu.items():
+            if isinstance(val, dict):
+                val = val.get("unicode") or ""
+            if isinstance(val, str) and val.strip() and val.strip().lower() != "null":
+                out[key] = val.strip()
+    return out
+
+
 def verse_writer(v: dict) -> str:
     """English writer name (e.g. 'Guru Nanak Dev Ji', 'Bhagat Kabir Ji')."""
     w = v.get("writer")
