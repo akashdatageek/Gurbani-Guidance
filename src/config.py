@@ -47,11 +47,15 @@ BANIDB_USER_AGENT = (
 CRAWL_DELAY = float(os.getenv("CRAWL_DELAY", "0.5"))
 
 # ── Retrieval mode ───────────────────────────────────────────────────────────
-# "banidb" (default) — query the BaniDB search API live; no local corpus,
-#                      no crawling, no embedding step required.
-# "local"            — hybrid dense+BM25 over a locally built corpus
-#                      (requires shabads.jsonl + ChromaDB index).
-RETRIEVAL_MODE = os.getenv("RETRIEVAL_MODE", "banidb").lower()
+# "local" (default) — hybrid dense+BM25 semantic retrieval over the corpus
+#                     built ONCE from the BaniDB API (src.ingest → src.audit
+#                     → src.embed). This is the full RAG logic: embeddings,
+#                     similarity gating, RRF fusion, writer/raag filters.
+# "banidb"          — live BaniDB search API per question (lexical full-word
+#                     matching only — no semantic retrieval; degraded quality
+#                     for situational/multilingual questions). Useful when a
+#                     local index cannot be built.
+RETRIEVAL_MODE = os.getenv("RETRIEVAL_MODE", "local").lower()
 # Results requested per BaniDB search call
 BANIDB_SEARCH_RESULTS = int(os.getenv("BANIDB_SEARCH_RESULTS", "20"))
 

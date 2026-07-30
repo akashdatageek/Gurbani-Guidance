@@ -1,13 +1,15 @@
-"""BaniDB bulk downloader — OPTIONAL, only for RETRIEVAL_MODE=local.
+"""One-time BaniDB corpus sync — builds data/shabads.jsonl for the default
+semantic pipeline (RETRIEVAL_MODE=local).
 
-The default pipeline does NOT use this: retrieval queries the BaniDB search
-API live at question time (src/retrieve_live.py) — no crawling, no local
-corpus, no embedding step.
+This is a single, throttled, resumable sync of Sri Guru Granth Sahib Ji from
+the BaniDB v2 API (the authoritative, proofread source) — NOT an ongoing
+crawler: run it once (≈1430 requests at CRAWL_DELAY spacing), and every ang
+is cached on disk so re-runs only fetch what's missing. The built corpus
+carries canonical shabadId boundaries and verseId ordering, then feeds
+src.audit → src.embed for hybrid dense+BM25 retrieval.
 
-Run this only if you explicitly want the offline/local hybrid-index mode
-(RETRIEVAL_MODE=local): it downloads all 1430 angs from the BaniDB v2 API
-into data/shabads.jsonl with canonical shabadId boundaries and verseId
-ordering. Please be considerate of BaniDB's servers (CRAWL_DELAY throttle).
+(RETRIEVAL_MODE=banidb skips this entirely and queries the search API live,
+at the cost of losing semantic retrieval.)
 
 Usage:
     python -m src.ingest [--start ANG] [--end ANG] [--force] [--build-only] [--verify-cache]

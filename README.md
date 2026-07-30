@@ -26,9 +26,10 @@ User question  (ਸਵਾਲ)
               ▼
    ┌───────────────────────────────────────────────┐
    │  Retrieval (RETRIEVAL_MODE)                   │
-   │  banidb (default): live BaniDB search API     │
-   │    /search → /shabads, RRF over queries       │
-   │  local: dense (bge-m3+Chroma) + BM25 → RRF    │
+   │  local (default): dense (bge-m3 + ChromaDB)   │
+   │    + BM25 sparse  ──►  RRF top-8              │
+   │    corpus synced once from the BaniDB API     │
+   │  banidb (optional): live /search → /shabads   │
    └──────────────────────┬────────────────────────┘
                                       │
                                       ▼
@@ -81,8 +82,8 @@ so refusals stay fast.
 
 | | |
 |---|---|
-| **Data source** | Live [BaniDB v2 API](https://api.banidb.com/v2/api-docs/) — proofread ground truth queried at question time; no crawling, no corpus build, no index. Optional local hybrid-index mode (`RETRIEVAL_MODE=local`) |
-| **Data quality** | `python -m src.audit` — structural checks + reference-tuk verification for local-mode corpora; non-zero exit for CI |
+| **Data source** | [BaniDB v2 API](https://api.banidb.com/v2/api-docs/) — proofread ground truth, synced **once** into the local corpus (canonical shabad boundaries, verseId ordering); optional live-search mode (`RETRIEVAL_MODE=banidb`) |
+| **Data quality** | `python -m src.audit` — structural checks + reference-tuk verification against known-good Gurbani; non-zero exit for CI |
 | **Multilingual** | English · ਪੰਜਾਬੀ (Gurmukhi) · Romanized Punjabi · Hinglish |
 | **Retrieval** | Hybrid dense (BAAI/bge-m3 + ChromaDB) + sparse (BM25) fused with Reciprocal Rank Fusion |
 | **Quote safety** | 3-layer verification — no fabricated ਗੁਰਬਾਣੀ ever reaches the user |
@@ -109,32 +110,37 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env and set ANTHROPIC_API_KEY
 
-# 3. Test the CLI  (ਪੁੱਛੋ — ask). Retrieval queries the BaniDB API live —
-#    no corpus build or indexing step needed.
+# 3. One-time corpus sync from the BaniDB API (throttled + resumable),
+#    then validate and index it
+python -m src.ingest
+python -m src.audit
+python -m src.embed
+
+# 4. Test the CLI  (ਪੁੱਛੋ — ask)
 python -m src.rag "What does Gurbani say about haumai?"
 python -m src.rag "ਨਾਮ ਸਿਮਰਨ ਬਾਰੇ ਕੀ ਕਿਹਾ ਗਿਆ ਹੈ?"
 
-# 4. Start the API server
+# 5. Start the API server
 uvicorn src.app:app --reload
 
-# 5. Start the frontend (separate terminal)
+# 6. Start the frontend (separate terminal)
 cd web
 npm install
 npm run dev
 # Open http://localhost:3000
 ```
 
-### Optional: local hybrid-index mode
+### Optional: live BaniDB search mode
 
-By default retrieval is **live** against the BaniDB API. If you need offline
-serving or hybrid dense+BM25 retrieval, build a local corpus once and set
-`RETRIEVAL_MODE=local`:
+If a local index can't be built (e.g. constrained hosting), set
+`RETRIEVAL_MODE=banidb` to query the BaniDB search API live per question.
+**Trade-off:** BaniDB search is lexical full-word matching — semantic
+retrieval (dense embeddings, similarity gating) is bypassed, which degrades
+situational, romanized-Punjabi, and Hinglish questions. The default local
+mode is recommended.
 
 ```bash
-python -m src.ingest    # bulk-download SGGS from BaniDB (resumable, throttled)
-python -m src.audit     # data-quality gate — must pass
-python -m src.embed     # build the ChromaDB index
-RETRIEVAL_MODE=local uvicorn src.app:app
+RETRIEVAL_MODE=banidb uvicorn src.app:app   # no corpus/index needed
 ```
 
 ### Docker
@@ -157,7 +163,7 @@ The FastAPI server needs persistent disk for ChromaDB (`data/chroma/`) and ~1.5 
 2. Set env vars: `ANTHROPIC_API_KEY`, `CORS_ORIGINS=https://akashdatageek.github.io`.
 3. Add a volume mounted at `/app/data`.
 4. Build: `pip install -r requirements.txt`; start: `uvicorn src.app:app --host 0.0.0.0 --port $PORT`.
-5. No data-preparation step needed — retrieval hits the BaniDB API live. (For `RETRIEVAL_MODE=local` only: run `python -m src.ingest` + `python -m src.audit` + `python -m src.embed` once via a Railway "run" command.)
+5. Run `python -m src.ingest && python -m src.audit && python -m src.embed` once via a Railway "run" command (one-time BaniDB sync onto the volume).
 
 **GCP Cloud Run** — see `PLAN.md §13` for full notes.
 
@@ -217,8 +223,8 @@ Exits non-zero if retrieval hit-rate < 80 % or any non-adversarial answer contai
 | 3 | **ਮਾਡਲ ਦੱਸਦਾ ਹੈ, ਰਾਜ ਨਹੀਂ ਕਰਦਾ** — The model describes; it never rules | Conduct questions always redirect to the [Sikh Rehat Maryada](https://www.sgpc.net/sikhism/sikh-rehat-maryada-section-one.asp) |
 | 4 | **ਗੁਰਮੁਖੀ ਪਹਿਲਾਂ** — Gurmukhi first, translation second | Original scripture in Gurmukhi script leads every citation |
 | 5 | **ਕੇਵਲ ਸ੍ਰੀ ਗੁਰੂ ਗ੍ਰੰਥ ਸਾਹਿਬ ਜੀ** — SGGS only | Only SGGS content in the `sggs` ChromaDB collection |
-| 6 | **BaniDB ਸਰੋਤ** — BaniDB is authoritative | Retrieval queries the proofread [BaniDB v2 API](https://api.banidb.com/v2/api-docs/) live at question time; no bulk crawling in the default mode |
-| 7 | **ਸ਼ੁੱਧਤਾ ਜਾਂਚ** — Local corpora must pass the audit | `python -m src.audit` validates ang coverage, writers, raags, and reference tuks before a local-mode corpus is embedded |
+| 6 | **BaniDB ਸਰੋਤ** — BaniDB is authoritative | The corpus is synced once from the proofread [BaniDB v2 API](https://api.banidb.com/v2/api-docs/) (canonical shabad boundaries, verseId order) — never from the PDF |
+| 7 | **ਸ਼ੁੱਧਤਾ ਜਾਂਚ** — Corpus must pass the audit | `python -m src.audit` validates ang coverage, writers, raags, and reference tuks before the corpus is embedded |
 
 ---
 
@@ -230,9 +236,9 @@ Gurbani-Guidance/
 │   ├── config.py        — all tunables (env-overridable)
 │   ├── corpus.py        — Pydantic models + make_windows()
 │   ├── banidb.py        — BaniDB v2 API client (angs/shabads/search)
-│   ├── retrieve_live.py — live BaniDB retrieval (DEFAULT backend)
-│   ├── ingest.py        — BaniDB bulk download (optional, local mode only)
-│   ├── audit.py         — corpus data-quality audit (local mode CI gate)
+│   ├── ingest.py        — one-time BaniDB sync → data/shabads.jsonl
+│   ├── audit.py         — corpus data-quality audit (CI gate)
+│   ├── retrieve_live.py — optional live-search backend (RETRIEVAL_MODE=banidb)
 │   ├── ingest_pdf.py    — PDF parser (last-resort offline fallback)
 │   ├── embed.py         — bge-m3 → ChromaDB
 │   ├── retrieve.py      — hybrid RRF retrieval
@@ -275,9 +281,9 @@ Gurbani-Guidance/
 | `GEMINI_MODEL` | `gemini-2.5-pro` | Gemini generation model |
 | `GEMINI_CLASSIFIER_MODEL` | `gemini-2.5-flash` | Gemini classifier model |
 | `MAX_TOKENS` | `4000` | Max generation tokens |
-| `RETRIEVAL_MODE` | `banidb` | `banidb` = live BaniDB API (no index); `local` = hybrid dense+BM25 |
-| `BANIDB_SEARCH_RESULTS` | `20` | Results requested per BaniDB search call |
-| `SIMILARITY_THRESHOLD` | `0.35` | Min cosine similarity (local mode); below → out-of-scope |
+| `RETRIEVAL_MODE` | `local` | `local` = hybrid dense+BM25 semantic RAG (default); `banidb` = live lexical search, no index |
+| `BANIDB_SEARCH_RESULTS` | `20` | Results per BaniDB search call (live mode / verification fallback) |
+| `SIMILARITY_THRESHOLD` | `0.35` | Min cosine similarity; below → out-of-scope |
 | `TOP_K` | `8` | Passages returned to the LLM |
 | `PDF_PATH` | `src/SriGuruGranthSahibJiDarpanEnglish.pdf` | Path to SGGS source PDF |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |

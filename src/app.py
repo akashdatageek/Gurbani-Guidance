@@ -54,9 +54,9 @@ async def lifespan(app: FastAPI):
         logger.info("Retrieval mode: live BaniDB API — no local index required.")
     elif not os.path.exists(SHABADS_FILE):
         logger.warning(
-            "RETRIEVAL_MODE=local but corpus not found at %s. "
-            "Build it, then run `python -m src.embed` — or unset RETRIEVAL_MODE "
-            "to use the live BaniDB API.",
+            "Corpus not found at %s. Run the one-time BaniDB sync: "
+            "`python -m src.ingest && python -m src.audit && python -m src.embed` "
+            "— or set RETRIEVAL_MODE=banidb for (degraded) live search.",
             SHABADS_FILE,
         )
     else:
@@ -171,9 +171,8 @@ async def ask_endpoint(request: Request, body: AskRequest) -> AskResponse:
         raise HTTPException(
             503,
             detail=(
-                "Search index not ready (RETRIEVAL_MODE=local). Build the corpus "
-                "and run `python -m src.embed`, or unset RETRIEVAL_MODE to use "
-                "the live BaniDB API."
+                "Search index not ready. Run the one-time BaniDB sync: "
+                "`python -m src.ingest && python -m src.audit && python -m src.embed`."
             ),
         )
 
