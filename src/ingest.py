@@ -1,13 +1,13 @@
-"""BaniDB crawler — the PRIMARY corpus builder for this project.
+"""BaniDB bulk downloader — OPTIONAL, only for RETRIEVAL_MODE=local.
 
-Downloads all 1430 angs of Sri Guru Granth Sahib Ji from the BaniDB v2 API
-(proofread, community-maintained ground truth) and builds data/shabads.jsonl.
-Shabad boundaries come from BaniDB's own shabadId — no heuristics — and
-verses are ordered by the global verseId, so shabads that span an ang
-boundary keep their canonical line order.
+The default pipeline does NOT use this: retrieval queries the BaniDB search
+API live at question time (src/retrieve_live.py) — no crawling, no local
+corpus, no embedding step.
 
-Requires internet access. `python -m src.ingest_pdf` remains available as an
-offline fallback, but its output is lower fidelity (see src/audit.py).
+Run this only if you explicitly want the offline/local hybrid-index mode
+(RETRIEVAL_MODE=local): it downloads all 1430 angs from the BaniDB v2 API
+into data/shabads.jsonl with canonical shabadId boundaries and verseId
+ordering. Please be considerate of BaniDB's servers (CRAWL_DELAY throttle).
 
 Usage:
     python -m src.ingest [--start ANG] [--end ANG] [--force] [--build-only] [--verify-cache]

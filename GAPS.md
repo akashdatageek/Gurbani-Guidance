@@ -103,6 +103,14 @@ the safety layer actively deletes true Gurbani because the corpus is wrong.
 
 ## 3. What changed in this PR
 
+> **Update (same PR, per reviewer feedback):** the BaniDB API is now used
+> **live at question time** (`RETRIEVAL_MODE=banidb`, the default) — retrieval
+> goes through `GET /search/{query}` + `GET /shabads/{shabadId}` per question,
+> and quote verification checks the retrieved passages first, then the BaniDB
+> search API (fail-closed). **No crawler, no corpus build, and no embedding
+> step are required.** The bulk downloader (`src/ingest.py`) and the audit/
+> embed pipeline remain only for the optional offline `RETRIEVAL_MODE=local`.
+
 1. **`src/banidb.py` (new)** — BaniDB v2 API client: `fetch_ang`, `fetch_shabad`,
    `search` (the endpoint from the API docs), retry/backoff, and tolerant field
    extractors shared by the crawler and the audit.

@@ -29,6 +29,7 @@ from src.config import (
     HISTORY_MAX_TURNS,
     RATE_LIMIT_MAX,
     RATE_LIMIT_WINDOW,
+    RETRIEVAL_MODE,
     SHABADS_FILE,
 )
 from src.corpus import corpus_stats
@@ -47,9 +48,15 @@ async def lifespan(app: FastAPI):
     if not ANTHROPIC_API_KEY:
         logger.warning("ANTHROPIC_API_KEY is not set — /ask will fail until it is configured.")
 
-    if not os.path.exists(SHABADS_FILE):
+    if RETRIEVAL_MODE == "banidb":
+        # Live BaniDB API mode (default): no crawler, no corpus, no local index.
+        _index_ready = True
+        logger.info("Retrieval mode: live BaniDB API — no local index required.")
+    elif not os.path.exists(SHABADS_FILE):
         logger.warning(
-            "Corpus not found at %s. Run `python -m src.ingest` (BaniDB) then `python -m src.embed`.",
+            "RETRIEVAL_MODE=local but corpus not found at %s. "
+            "Build it, then run `python -m src.embed` — or unset RETRIEVAL_MODE "
+            "to use the live BaniDB API.",
             SHABADS_FILE,
         )
     else:
@@ -138,15 +145,20 @@ class AskResponse(BaseModel):
 
 @app.get("/health")
 async def health() -> dict:
-    return {"ok": True, "index_ready": _index_ready}
+    return {"ok": True, "index_ready": _index_ready, "retrieval_mode": RETRIEVAL_MODE}
 
 
 @app.get("/stats")
 async def stats() -> dict:
     import os
     if not os.path.exists(SHABADS_FILE):
-        raise HTTPException(503, detail="Corpus not built. Run python -m src.ingest first.")
-    return corpus_stats()
+        if RETRIEVAL_MODE == "banidb":
+            return {
+                "retrieval_mode": "banidb",
+                "source": "BaniDB v2 API (live, no local corpus)",
+            }
+        raise HTTPException(503, detail="Corpus not built for RETRIEVAL_MODE=local.")
+    return {"retrieval_mode": RETRIEVAL_MODE, **corpus_stats()}
 
 
 @app.post("/ask", response_model=AskResponse)
@@ -158,7 +170,11 @@ async def ask_endpoint(request: Request, body: AskRequest) -> AskResponse:
     if not _index_ready:
         raise HTTPException(
             503,
-            detail="Search index not ready. Run `python -m src.ingest` and `python -m src.embed` first.",
+            detail=(
+                "Search index not ready (RETRIEVAL_MODE=local). Build the corpus "
+                "and run `python -m src.embed`, or unset RETRIEVAL_MODE to use "
+                "the live BaniDB API."
+            ),
         )
 
     from src.rag import ask, deep_ask

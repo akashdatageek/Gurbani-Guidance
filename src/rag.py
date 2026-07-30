@@ -46,7 +46,9 @@ from src.config import (
     SHABADS_FILE,
     TOP_K,
 )
-from src.retrieve import Passage, retrieve
+from src.config import RETRIEVAL_MODE
+from src.corpus import normalize_gurmukhi
+from src.retrieve import Passage
 from src.verify import verify_answer
 
 logger = logging.getLogger(__name__)
@@ -521,6 +523,40 @@ If you have a question about what Gurbani teaches spiritually, I'm here to help.
 
 
 # ---------------------------------------------------------------------------
+# Retrieval dispatch — live BaniDB API (default) or local hybrid index
+# ---------------------------------------------------------------------------
+
+def retrieve(question: str, k: int = TOP_K, **filters: Any) -> list[Passage]:
+    """Route retrieval by RETRIEVAL_MODE.
+
+    "banidb" (default): live BaniDB search API — no crawler, no local index.
+    "local": hybrid dense+BM25 over a locally built corpus.
+    """
+    if RETRIEVAL_MODE == "local":
+        from src.retrieve import retrieve as local_retrieve
+        return local_retrieve(question, k=k, **filters)
+    from src.retrieve_live import retrieve_live
+    return retrieve_live(question, k=k, **filters)
+
+
+def _trusted_lines_from_passages(passages: list[Passage]) -> dict[str, set[int]]:
+    """Map normalized Gurmukhi -> angs for every retrieved passage line.
+
+    These lines came verbatim from the source (BaniDB API or local corpus),
+    so verify_answer can accept quotes of them without extra lookups.
+    """
+    trusted: dict[str, set[int]] = {}
+    for p in passages:
+        for j, g in enumerate(p.gurmukhi):
+            norm = normalize_gurmukhi(g)
+            if not norm:
+                continue
+            ang = p.line_angs[j] if j < len(p.line_angs) else p.ang
+            trusted.setdefault(norm, set()).add(ang or p.ang)
+    return trusted
+
+
+# ---------------------------------------------------------------------------
 # Comparative multi-retrieval
 # ---------------------------------------------------------------------------
 
@@ -676,7 +712,9 @@ def ask(
         logger.error("LLM API error (%s): %s", PROVIDER, exc)
         raise
 
-    verified_answer, failed_quotes = verify_answer(raw_answer)
+    verified_answer, failed_quotes = verify_answer(
+        raw_answer, trusted_lines=_trusted_lines_from_passages(passages)
+    )
 
     if failed_quotes:
         logger.warning("Removed %d unverified quote(s): %s", len(failed_quotes), failed_quotes)
@@ -838,7 +876,9 @@ def deep_ask(
         logger.error("LLM API error (%s): %s", PROVIDER, exc)
         raise
 
-    verified_answer, failed_quotes = verify_answer(raw_answer)
+    verified_answer, failed_quotes = verify_answer(
+        raw_answer, trusted_lines=_trusted_lines_from_passages(passages)
+    )
     if failed_quotes:
         logger.warning("Removed %d unverified quote(s): %s", len(failed_quotes), failed_quotes)
 

@@ -46,6 +46,15 @@ BANIDB_USER_AGENT = (
 )
 CRAWL_DELAY = float(os.getenv("CRAWL_DELAY", "0.5"))
 
+# ── Retrieval mode ───────────────────────────────────────────────────────────
+# "banidb" (default) — query the BaniDB search API live; no local corpus,
+#                      no crawling, no embedding step required.
+# "local"            — hybrid dense+BM25 over a locally built corpus
+#                      (requires shabads.jsonl + ChromaDB index).
+RETRIEVAL_MODE = os.getenv("RETRIEVAL_MODE", "banidb").lower()
+# Results requested per BaniDB search call
+BANIDB_SEARCH_RESULTS = int(os.getenv("BANIDB_SEARCH_RESULTS", "20"))
+
 # ── CORS ─────────────────────────────────────────────────────────────────────
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 
