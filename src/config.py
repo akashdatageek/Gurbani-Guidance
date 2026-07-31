@@ -32,10 +32,12 @@ DENSE_K = int(os.getenv("DENSE_K", "20"))
 SPARSE_K = int(os.getenv("SPARSE_K", "20"))
 RRF_K = int(os.getenv("RRF_K", "60"))
 # Minimum cosine similarity for a result to be considered "relevant".
-# Calibrated on the BaniDB corpus with bge-m3: in-scope questions (English,
-# Gurmukhi, Hinglish, situational) score >= ~0.50; unrelated queries
-# (tech/recipes/sports) score <= ~0.45. 0.47 splits with margin either side.
-SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.47"))
+# Calibrated on the BaniDB corpus with Gurmukhi-inclusive bge-m3 embeddings:
+# in-scope questions (English, Gurmukhi, Hinglish, situational) score
+# >= ~0.49; unrelated queries score <= ~0.48. 0.48 favors recall — a rare
+# borderline off-topic query may pass the gate, where the LLM's own
+# "no relevant passage" instruction is the second line of defense.
+SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.48"))
 
 # ── History limits ───────────────────────────────────────────────────────────
 HISTORY_MAX_TURNS = int(os.getenv("HISTORY_MAX_TURNS", "10"))

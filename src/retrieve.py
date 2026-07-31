@@ -308,8 +308,13 @@ def retrieve(
     where = _build_chroma_where(filters)
     dense = _dense_retrieve(question, k=DENSE_K, where=where)
 
-    # Relevance gate: if best dense hit is below threshold, treat as no-hit
-    if dense and dense[0][1] < min_similarity:
+    # Relevance gate: if best dense hit is below threshold, treat as no-hit.
+    # Applied only to sentence-like queries (3+ content words): terse keyword
+    # lookups ("haumai", "anand") legitimately score in the same dense band
+    # as off-topic sentences, but they get exact-token BM25 support and are
+    # practically always in-domain — gating them would block real questions.
+    content_words = [t for t in _PUNCT_RE.sub(" ", question.lower()).split() if len(t) > 2]
+    if len(content_words) >= 3 and dense and dense[0][1] < min_similarity:
         logger.info(
             "Best dense similarity %.3f < threshold %.3f — treating as out-of-scope.",
             dense[0][1], min_similarity,

@@ -252,7 +252,7 @@ questions:
   - id: q105
     category: comparative_writer
     question: "How does Bhagat Ravidas describe the city without sorrow, Begampura?"
-    expected_terms: ["begampura", "sorrow", "city"]
+    expected_terms: ["begampura", "baygumpura", "begumpura", "sorrow"]
     expected_angs: [345]
-    expected_writers: ["Ravidas", "Ravidaas"]
-    notes: "Begampura shabad — Bhagat Ravidas Ji, Ang 345"
+    expected_writers: ["Ravi Daas", "Ravidas"]
+    notes: "Begampura shabad — corpus writer spelling is 'Bhagat Ravi Daas Ji', Ang 345"
