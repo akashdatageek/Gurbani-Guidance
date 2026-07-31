@@ -283,7 +283,7 @@ Gurbani-Guidance/
 | `MAX_TOKENS` | `4000` | Max generation tokens |
 | `RETRIEVAL_MODE` | `local` | `local` = hybrid dense+BM25 semantic RAG (default); `banidb` = live lexical search, no index |
 | `BANIDB_SEARCH_RESULTS` | `20` | Results per BaniDB search call (live mode / verification fallback) |
-| `SIMILARITY_THRESHOLD` | `0.35` | Min cosine similarity; below → out-of-scope |
+| `SIMILARITY_THRESHOLD` | `0.47` | Min cosine similarity; below → out-of-scope |
 | `TOP_K` | `8` | Passages returned to the LLM |
 | `PDF_PATH` | `src/SriGuruGranthSahibJiDarpanEnglish.pdf` | Path to SGGS source PDF |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
