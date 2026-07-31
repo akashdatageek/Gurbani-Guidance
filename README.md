@@ -57,7 +57,7 @@ User question  (ਸਵਾਲ)
 | **Conceptual** — ਸੰਕਲਪ | Default | Theological explanation with Gurbani citations |
 | **Situational** — ਸਥਿਤੀ | "I feel…", "I'm going through…", "I am suffering" | Compassionate framing; passages that speak to the experience |
 | **Comparative** — ਤੁਲਨਾ | "Compare Nanak and Kabir…", "How do different Gurus describe…" | Retrieves per writer, organises answer by voice |
-| **Rehat** — ਰਹਿਤ | "Is X allowed?", "Can Sikhs drink…" | Scriptural context + mandatory redirect to [Sikh Rehat Maryada](https://www.sgpc.net/sikhism/sikh-rehat-maryada-section-one.asp) |
+| **Rehat** — ਰਹਿਤ | "Is X allowed?", "Can Sikhs drink…" | Scriptural context + mandatory redirect to [Sikh Rehat Maryada](https://www.sgpc.net/rehat_maryada/) |
 | **Fabrication** — ਨਿਰਮਾਣ | "Write a shabad…", "Compose a hymn…" | Immediate, graceful refusal — no invented ਗੁਰਮੁਖੀ |
 | **Out of scope** — ਬਾਹਰ | "Birth story of Guru Nanak", "History of Sikh empire" | Redirect — biographical/historical facts lie outside SGGS |
 
@@ -86,7 +86,7 @@ so refusals stay fast.
 | **Data quality** | `python -m src.audit` — structural checks + reference-tuk verification against known-good Gurbani; non-zero exit for CI |
 | **Multilingual** | English · ਪੰਜਾਬੀ (Gurmukhi) · Romanized Punjabi · Hinglish |
 | **Retrieval** | Hybrid dense (BAAI/bge-m3 + ChromaDB) + sparse (BM25) fused with Reciprocal Rank Fusion |
-| **Quote safety** | 3-layer verification — no fabricated ਗੁਰਬਾਣੀ ever reaches the user |
+| **Quote safety** | 3-layer verification — no fabricated ਗੁਰਬਾਣੀ ever reaches the user. **Scope:** the guarantee covers Gurmukhi-script quotes (`<tuk>` tags and danda-marked runs); transliterations and English translations are the model's own rendering and are not verified |
 | **Chunking** | Shabad-scoped 12-line windows, 2-line overlap — never crosses ਸ਼ਬਦ boundary |
 | **Routing** | 6-agent system; LLM (haiku) fallback for non-English queries |
 | **Deep Study** | Optional mode — decomposes a question into 3–5 facets, retrieves per facet (up to 16 passages) for richer, multi-angle answers |
@@ -220,10 +220,10 @@ Exits non-zero if retrieval hit-rate < 80 % or any non-adversarial answer contai
 |---|---|---|
 | 1 | **ਸ਼ਬਦ-ਸੀਮਿਤ ਚੰਕਿੰਗ** — Chunking is shabad-scoped | Windows never cross a ਸ਼ਬਦ boundary; each window is a coherent unit of ਗੁਰਬਾਣੀ |
 | 2 | **ਹਵਾਲਾ ਜਾਂਚ ਲਾਜ਼ਮੀ** — Quote verification is mandatory | Every `<tuk>` tag is checked against the corpus before the answer reaches the user; fabricated quotes are stripped |
-| 3 | **ਮਾਡਲ ਦੱਸਦਾ ਹੈ, ਰਾਜ ਨਹੀਂ ਕਰਦਾ** — The model describes; it never rules | Conduct questions always redirect to the [Sikh Rehat Maryada](https://www.sgpc.net/sikhism/sikh-rehat-maryada-section-one.asp) |
+| 3 | **ਮਾਡਲ ਦੱਸਦਾ ਹੈ, ਰਾਜ ਨਹੀਂ ਕਰਦਾ** — The model describes; it never rules | Conduct questions always redirect to the [Sikh Rehat Maryada](https://www.sgpc.net/rehat_maryada/) |
 | 4 | **ਗੁਰਮੁਖੀ ਪਹਿਲਾਂ** — Gurmukhi first, translation second | Original scripture in Gurmukhi script leads every citation |
 | 5 | **ਕੇਵਲ ਸ੍ਰੀ ਗੁਰੂ ਗ੍ਰੰਥ ਸਾਹਿਬ ਜੀ** — SGGS only | Only SGGS content in the `sggs` ChromaDB collection |
-| 6 | **BaniDB ਸਰੋਤ** — BaniDB is authoritative | The corpus is synced once from the proofread [BaniDB v2 API](https://api.banidb.com/v2/api-docs/) (canonical shabad boundaries, verseId order) — never from the PDF |
+| 6 | **BaniDB ਸਰੋਤ** — BaniDB is authoritative | The corpus is synced once from the proofread [BaniDB v2 API](https://api.banidb.com/v2/api-docs/) (canonical shabad boundaries, verseId order) and ships in the repo as `data/shabads.jsonl.gz` |
 | 7 | **ਸ਼ੁੱਧਤਾ ਜਾਂਚ** — Corpus must pass the audit | `python -m src.audit` validates ang coverage, writers, raags, and reference tuks before the corpus is embedded |
 
 ---
@@ -239,13 +239,13 @@ Gurbani-Guidance/
 │   ├── ingest.py        — one-time BaniDB sync → data/shabads.jsonl
 │   ├── audit.py         — corpus data-quality audit (CI gate)
 │   ├── retrieve_live.py — optional live-search backend (RETRIEVAL_MODE=banidb)
-│   ├── ingest_pdf.py    — PDF parser (last-resort offline fallback)
 │   ├── embed.py         — bge-m3 → ChromaDB
 │   ├── retrieve.py      — hybrid RRF retrieval
 │   ├── verify.py        — 3-layer quote verification
 │   ├── rag.py           — 6-agent RAG pipeline
-│   ├── app.py           — FastAPI server
-│   └── SriGuruGranthSahibJiDarpanEnglish.pdf  — SGGS source PDF
+│   └── app.py           — FastAPI server
+├── data/
+│   └── shabads.jsonl.gz — BaniDB-synced corpus snapshot (auto-inflated)
 ├── web/                 — Next.js 14 chat UI
 │   ├── app/
 │   │   ├── page.tsx     — main chat interface
@@ -283,12 +283,30 @@ Gurbani-Guidance/
 | `MAX_TOKENS` | `4000` | Max generation tokens |
 | `RETRIEVAL_MODE` | `local` | `local` = hybrid dense+BM25 semantic RAG (default); `banidb` = live lexical search, no index |
 | `BANIDB_SEARCH_RESULTS` | `20` | Results per BaniDB search call (live mode / verification fallback) |
-| `SIMILARITY_THRESHOLD` | `0.47` | Min cosine similarity; below → out-of-scope |
+| `SIMILARITY_THRESHOLD` | `0.48` | Min cosine similarity; below → out-of-scope |
 | `TOP_K` | `8` | Passages returned to the LLM |
-| `PDF_PATH` | `src/SriGuruGranthSahibJiDarpanEnglish.pdf` | Path to SGGS source PDF |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
 | `RATE_LIMIT_MAX` | `10` | Max requests per IP per window |
 | `RATE_LIMIT_WINDOW` | `60` | Rate-limit window in seconds |
+
+---
+
+## ਡਾਟਾ ਸਰੋਤ ਅਤੇ ਲਾਇਸੰਸ — Data Attribution & Licensing
+
+The Gurbani text, translations (Bani DB, Manmohan Singh, Sant Singh Khalsa),
+transliterations, and vyakhya (Prof. Sahib Singh's SGGS Darpan, Faridkot Wala
+Teeka) in `data/shabads.jsonl.gz` come from **[BaniDB](https://banidb.com)** —
+the community-maintained, proofread database of the Khalis Foundation that
+also powers SikhiToTheMax. Deep gratitude to their sevadars.
+
+> **Important:** BaniDB does not make its database fully open, and the bundled
+> translations/teekas carry their own copyrights. Before this repository is
+> distributed widely, the maintainers should seek permission from the
+> BaniDB/Khalis Foundation team (contact@khalisfoundation.org) for
+> redistributing the synced snapshot, or replace the committed snapshot with a
+> build-time sync (`python -m src.ingest`). This project is a non-commercial
+> seva/educational effort and claims no rights over the scripture or the
+> translations.
 
 ---
 

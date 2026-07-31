@@ -11,8 +11,8 @@
   multilingual questions). Use only when a local index can't be built.
 - Quote verification works in both modes: retrieved passages → local corpus →
   BaniDB search API fallback (fail-closed).
-- `python -m src.ingest_pdf` is a last-resort offline corpus builder — its
-  output fails the accuracy audit (see GAPS.md).
+- The legacy PDF parser and source PDF have been REMOVED — the BaniDB-synced
+  corpus snapshot (data/shabads.jsonl.gz, committed) is the only corpus source.
 
 ## Non-negotiable constraints
 1. Chunking shabad-scoped (≤12-line windows, never cross shabad); shabad
@@ -23,7 +23,7 @@
 4. Gurmukhi first, translation second.
 5. SGGS only (BaniDB source id "G"; `sggs` ChromaDB collection).
 6. Data source: BaniDB v2 API (https://api.banidb.com/v2) is authoritative —
-   synced once into the local corpus; never parse the PDF for production data.
+   synced once into the local corpus (committed as data/shabads.jsonl.gz).
 7. Corpus must pass `python -m src.audit` before embedding/serving.
 
 ## Quick start

@@ -23,7 +23,6 @@ DATA_DIR = os.getenv("DATA_DIR", "data")
 RAW_ANGS_DIR = os.path.join(DATA_DIR, "raw_angs")
 SHABADS_FILE = os.path.join(DATA_DIR, "shabads.jsonl")
 CHROMA_DIR = os.path.join(DATA_DIR, "chroma")
-PDF_PATH = os.getenv("PDF_PATH", os.path.join("src", "SriGuruGranthSahibJiDarpanEnglish.pdf"))
 
 # ── Retrieval ────────────────────────────────────────────────────────────────
 WINDOW_SIZE = int(os.getenv("WINDOW_SIZE", "12"))
@@ -33,10 +32,12 @@ DENSE_K = int(os.getenv("DENSE_K", "20"))
 SPARSE_K = int(os.getenv("SPARSE_K", "20"))
 RRF_K = int(os.getenv("RRF_K", "60"))
 # Minimum cosine similarity for a result to be considered "relevant".
-# Calibrated on the BaniDB corpus with bge-m3: in-scope questions (English,
-# Gurmukhi, Hinglish, situational) score >= ~0.50; unrelated queries
-# (tech/recipes/sports) score <= ~0.45. 0.47 splits with margin either side.
-SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.47"))
+# Calibrated on the BaniDB corpus with Gurmukhi-inclusive bge-m3 embeddings:
+# in-scope questions (English, Gurmukhi, Hinglish, situational) score
+# >= ~0.49; unrelated queries score <= ~0.48. 0.48 favors recall — a rare
+# borderline off-topic query may pass the gate, where the LLM's own
+# "no relevant passage" instruction is the second line of defense.
+SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.48"))
 
 # ── History limits ───────────────────────────────────────────────────────────
 HISTORY_MAX_TURNS = int(os.getenv("HISTORY_MAX_TURNS", "10"))
@@ -70,6 +71,17 @@ CHROMA_COLLECTION = "sggs"
 EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "64"))
 EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-m3")
 
-# ── Rate limiting ─────────────────────────────────────────────────────────────
+# ── Rate limiting & spend protection ─────────────────────────────────────────
 RATE_LIMIT_WINDOW = float(os.getenv("RATE_LIMIT_WINDOW", "60.0"))   # seconds
 RATE_LIMIT_MAX = int(os.getenv("RATE_LIMIT_MAX", "10"))              # req per window
+# Global daily cap on /ask requests (all clients combined) — a hard budget
+# backstop for the LLM key. 0 disables the cap.
+DAILY_REQUEST_CAP = int(os.getenv("DAILY_REQUEST_CAP", "500"))
+# Optional bearer token for /ask. Empty = open access (default, backwards
+# compatible). Set API_TOKEN and send "Authorization: Bearer <token>".
+API_TOKEN = os.getenv("API_TOKEN", "")
+# Behind a reverse proxy (Railway/Cloud Run), request.client.host is the
+# proxy IP — every client collapses into one rate bucket. Set
+# TRUST_PROXY=true (only when actually behind a proxy you control) to use
+# the first X-Forwarded-For hop instead.
+TRUST_PROXY = os.getenv("TRUST_PROXY", "false").lower() in ("1", "true", "yes")

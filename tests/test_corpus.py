@@ -136,3 +136,21 @@ def test_shabad_line_model():
     assert line.gurmukhi == "ਸਤਿ ਨਾਮੁ"
     assert line.transliteration == "Sat Naam"
     assert line.translation_en == "True Name"
+
+
+def test_make_windows_tail_merge_keeps_repeated_lines():
+    """A repeated refrain line must survive the tail merge (positional, not equality)."""
+    refrain = ShabadLine(gurmukhi="ਰਹਾਉ ਤੁਕ", transliteration="rahao", translation_en="refrain")
+    lines = [
+        ShabadLine(gurmukhi=f"g{i}", transliteration=f"t{i}", translation_en=f"e{i}")
+        for i in range(12)
+    ]
+    # windows: [0:12], [10:13] (tail of 3 < min_useful 4) → merged to [0:13]
+    lines.append(refrain)
+    lines[5] = refrain.model_copy()  # same content appears earlier too
+    windows = make_windows(lines, window_size=12, overlap=2)
+    assert len(windows) == 1
+    total_lines = sum(len(w) for w in windows)
+    assert total_lines == 13  # nothing deduplicated away
+    assert windows[0][-1].gurmukhi == "ਰਹਾਉ ਤੁਕ"
+    assert windows[0][5].gurmukhi == "ਰਹਾਉ ਤੁਕ"

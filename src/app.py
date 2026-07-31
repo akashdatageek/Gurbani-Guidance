@@ -24,13 +24,16 @@ from pydantic import BaseModel, Field
 
 from src.config import (
     ANTHROPIC_API_KEY,
+    API_TOKEN,
     CORS_ORIGINS,
+    DAILY_REQUEST_CAP,
     HISTORY_MAX_CHARS,
     HISTORY_MAX_TURNS,
     RATE_LIMIT_MAX,
     RATE_LIMIT_WINDOW,
     RETRIEVAL_MODE,
     SHABADS_FILE,
+    TRUST_PROXY,
 )
 from src.corpus import corpus_stats
 
@@ -92,8 +95,46 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------------------------
-# Rate limiting
+# Client identity, auth, rate limiting, daily budget cap
 # ---------------------------------------------------------------------------
+
+def _client_ip(request: Request) -> str:
+    """Real client IP: first X-Forwarded-For hop when TRUST_PROXY, else peer."""
+    if TRUST_PROXY:
+        xff = request.headers.get("x-forwarded-for", "")
+        if xff:
+            return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _check_auth(request: Request) -> None:
+    """Enforce bearer-token auth when API_TOKEN is configured."""
+    if not API_TOKEN:
+        return
+    header = request.headers.get("authorization", "")
+    if header != f"Bearer {API_TOKEN}":
+        raise HTTPException(401, detail="Missing or invalid API token.")
+
+
+_daily_count = 0
+_daily_date = ""
+
+
+def _check_daily_cap() -> None:
+    """Global daily budget backstop for the LLM key (all clients combined)."""
+    global _daily_count, _daily_date
+    if DAILY_REQUEST_CAP <= 0:
+        return
+    today = time.strftime("%Y-%m-%d")
+    if today != _daily_date:
+        _daily_date = today
+        _daily_count = 0
+    if _daily_count >= DAILY_REQUEST_CAP:
+        raise HTTPException(
+            429, detail="Daily request budget reached. Please try again tomorrow."
+        )
+    _daily_count += 1
+
 
 _rate_limit_store: dict[str, list[float]] = defaultdict(list)
 _RATE_STORE_MAX_IPS = 10_000   # evict oldest IPs beyond this
@@ -153,8 +194,16 @@ async def health() -> dict:
     return {"ok": True, "index_ready": _index_ready, "retrieval_mode": RETRIEVAL_MODE}
 
 
+# Cached at first call — corpus_stats() re-parses all ~60K lines through
+# Pydantic, which is far too expensive to run per request.
+_stats_cache: dict | None = None
+
+
 @app.get("/stats")
-async def stats() -> dict:
+async def stats(request: Request) -> dict:
+    global _stats_cache
+    if not _check_rate_limit(_client_ip(request)):
+        raise HTTPException(429, detail="Rate limit exceeded. Please wait before retrying.")
     import os
     if not os.path.exists(SHABADS_FILE):
         if RETRIEVAL_MODE == "banidb":
@@ -163,14 +212,18 @@ async def stats() -> dict:
                 "source": "BaniDB v2 API (live, no local corpus)",
             }
         raise HTTPException(503, detail="Corpus not built for RETRIEVAL_MODE=local.")
-    return {"retrieval_mode": RETRIEVAL_MODE, **corpus_stats()}
+    if _stats_cache is None:
+        _stats_cache = {"retrieval_mode": RETRIEVAL_MODE, **corpus_stats()}
+    return _stats_cache
 
 
 @app.post("/ask", response_model=AskResponse)
 async def ask_endpoint(request: Request, body: AskRequest) -> AskResponse:
-    client_ip = request.client.host if request.client else "unknown"
+    _check_auth(request)
+    client_ip = _client_ip(request)
     if not _check_rate_limit(client_ip):
         raise HTTPException(429, detail="Rate limit exceeded. Please wait before retrying.")
+    _check_daily_cap()
 
     if not _index_ready:
         raise HTTPException(

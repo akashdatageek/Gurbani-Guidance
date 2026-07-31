@@ -6,9 +6,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source
+# Copy source + the committed corpus snapshot (inflated on first use, so the
+# container serves real data even with an empty volume)
 COPY src/ ./src/
 COPY eval/ ./eval/
+COPY data/shabads.jsonl.gz ./data/shabads.jsonl.gz
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
