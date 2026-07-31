@@ -29,7 +29,7 @@ from src.config import (
     WINDOW_OVERLAP,
     WINDOW_SIZE,
 )
-from src.corpus import load_shabads, make_windows
+from src.corpus import ensure_corpus, load_shabads, make_windows
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +70,11 @@ def init() -> None:
     except ImportError as exc:
         raise ImportError("Run: pip install -r requirements.txt") from exc
 
+    ensure_corpus(SHABADS_FILE)
     if not os.path.exists(SHABADS_FILE):
         raise FileNotFoundError(
-            f"Corpus not found at {SHABADS_FILE}. Run `python -m src.ingest_pdf` first."
+            f"Corpus not found at {SHABADS_FILE}. Run `python -m src.ingest` "
+            "(BaniDB, primary) or `python -m src.ingest_pdf` (offline fallback) first."
         )
 
     logger.info("Loading embedding model %s …", EMBED_MODEL)
@@ -202,7 +204,8 @@ def _lookup_passages_batch(fused: list[tuple[str, float]]) -> list[Passage]:
     except Exception:
         return []
 
-    passages: list[Passage] = []
+    order = {pid: i for i, pid in enumerate(fused_ids)}
+    ordered: list[tuple[int, Passage]] = []
     for pid, doc_str, meta in zip(
         result.get("ids", []),
         result.get("documents", []),
@@ -222,12 +225,12 @@ def _lookup_passages_batch(fused: list[tuple[str, float]]) -> list[Passage]:
             line_angs=doc.get("line_angs", []),
             score=score_map.get(pid, 0.0),
         )
-        passages.append(p)
+        ordered.append((order.get(pid, len(fused_ids)), p))
 
-    # Preserve RRF order
-    order = {pid: i for i, pid in enumerate(fused_ids)}
-    passages.sort(key=lambda p: order.get(f"{p.shabad_id}-{p.ang}", 999))
-    return passages
+    # Preserve RRF order — key by the actual passage id ("{shabad_id}-{win_idx}"),
+    # since ChromaDB get() does not guarantee it returns rows in request order.
+    ordered.sort(key=lambda t: t[0])
+    return [p for _, p in ordered]
 
 
 # ---------------------------------------------------------------------------

@@ -32,8 +32,11 @@ TOP_K = int(os.getenv("TOP_K", "8"))
 DENSE_K = int(os.getenv("DENSE_K", "20"))
 SPARSE_K = int(os.getenv("SPARSE_K", "20"))
 RRF_K = int(os.getenv("RRF_K", "60"))
-# Minimum cosine similarity for a result to be considered "relevant"
-SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.35"))
+# Minimum cosine similarity for a result to be considered "relevant".
+# Calibrated on the BaniDB corpus with bge-m3: in-scope questions (English,
+# Gurmukhi, Hinglish, situational) score >= ~0.50; unrelated queries
+# (tech/recipes/sports) score <= ~0.45. 0.47 splits with margin either side.
+SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.47"))
 
 # ── History limits ───────────────────────────────────────────────────────────
 HISTORY_MAX_TURNS = int(os.getenv("HISTORY_MAX_TURNS", "10"))
@@ -45,6 +48,19 @@ BANIDB_USER_AGENT = (
     "GurbaniRAG/1.0 (scripture-study-tool; github.com/akashdatageek/gurbani-guidance)"
 )
 CRAWL_DELAY = float(os.getenv("CRAWL_DELAY", "0.5"))
+
+# ── Retrieval mode ───────────────────────────────────────────────────────────
+# "local" (default) — hybrid dense+BM25 semantic retrieval over the corpus
+#                     built ONCE from the BaniDB API (src.ingest → src.audit
+#                     → src.embed). This is the full RAG logic: embeddings,
+#                     similarity gating, RRF fusion, writer/raag filters.
+# "banidb"          — live BaniDB search API per question (lexical full-word
+#                     matching only — no semantic retrieval; degraded quality
+#                     for situational/multilingual questions). Useful when a
+#                     local index cannot be built.
+RETRIEVAL_MODE = os.getenv("RETRIEVAL_MODE", "local").lower()
+# Results requested per BaniDB search call
+BANIDB_SEARCH_RESULTS = int(os.getenv("BANIDB_SEARCH_RESULTS", "20"))
 
 # ── CORS ─────────────────────────────────────────────────────────────────────
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")

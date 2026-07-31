@@ -1,9 +1,26 @@
+import gzip
 import json
+import os
+import shutil
 import unicodedata
 import re
 from typing import Iterator
 from pydantic import BaseModel, field_validator
 from src.config import SHABADS_FILE, WINDOW_SIZE, WINDOW_OVERLAP
+
+
+def ensure_corpus(path: str = SHABADS_FILE) -> str:
+    """Decompress the committed corpus snapshot on first use.
+
+    The repo ships the BaniDB-synced corpus as `<path>.gz` (data/ itself is
+    gitignored except for this snapshot). If the plain JSONL is absent but the
+    .gz exists, inflate it once so every consumer can read the plain file.
+    """
+    if not os.path.exists(path) and os.path.exists(path + ".gz"):
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with gzip.open(path + ".gz", "rb") as fin, open(path, "wb") as fout:
+            shutil.copyfileobj(fin, fout)
+    return path
 
 
 class ShabadLine(BaseModel):
@@ -12,9 +29,15 @@ class ShabadLine(BaseModel):
     translation_en: str
     # Per-line ang — the actual ang this line appears on (may differ from shabad start ang)
     ang: int = 0
+    # BaniDB global verse id (0 when built from the PDF fallback)
+    verse_id: int = 0
     # Additional translations (populated when available)
     translation_en_ms: str = ""   # Manmohan Singh
     translation_en_ssk: str = ""  # Sant Singh Khalsa
+    # Punjabi vyakhya/teeka (populated when available)
+    vyakhya_ss: str = ""    # Prof. Sahib Singh — SGGS Darpan vyakhya
+    vyakhya_ft: str = ""    # Faridkot Wala Teeka
+    vyakhya_pss: str = ""   # Prof. Sahib Singh — pad-arth (word meanings)
 
 
 class Shabad(BaseModel):
@@ -37,6 +60,7 @@ class Shabad(BaseModel):
 
 def load_shabads(path: str = SHABADS_FILE) -> Iterator[Shabad]:
     """Lazily yield Shabad objects from a JSONL file."""
+    ensure_corpus(path)
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()

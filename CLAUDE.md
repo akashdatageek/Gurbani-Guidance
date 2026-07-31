@@ -1,27 +1,45 @@
 # CLAUDE.md — Gurbani RAG Working Memory
 
 ## Project state
-- Phase 0–9 implemented; PDF-based corpus builder (`src/ingest_pdf.py`) ready — no internet required.
-- Run `python -m src.ingest_pdf` to parse the SGGS PDF into `data/shabads.jsonl` (~6 seconds).
+- DEFAULT (`RETRIEVAL_MODE=local`): full semantic RAG — hybrid dense (bge-m3 +
+  ChromaDB) + BM25 with RRF over a corpus built ONCE from the BaniDB v2 API
+  (one-time sync, throttled + resumable: src.ingest → src.audit → src.embed).
+  The BaniDB API is the authoritative data source; the sync is not an ongoing
+  crawler.
+- OPTIONAL (`RETRIEVAL_MODE=banidb`): live BaniDB search API per question —
+  lexical full-word matching only, NO semantic retrieval (degrades situational/
+  multilingual questions). Use only when a local index can't be built.
+- Quote verification works in both modes: retrieved passages → local corpus →
+  BaniDB search API fallback (fail-closed).
+- `python -m src.ingest_pdf` is a last-resort offline corpus builder — its
+  output fails the accuracy audit (see GAPS.md).
 
 ## Non-negotiable constraints
-1. Chunking shabad-scoped (12-line windows, 2-line overlap, never cross shabad).
-2. Quote verification mandatory: every <tuk> tag verified against corpus frozenset.
+1. Chunking shabad-scoped (≤12-line windows, never cross shabad); shabad
+   boundaries come from BaniDB's canonical shabadId.
+2. Quote verification mandatory: every <tuk> tag verified (retrieved passages →
+   local corpus → BaniDB search API). Unverifiable quotes are stripped.
 3. Model describes, never rules. Rehat questions → redirect to Sikh Rehat Maryada.
 4. Gurmukhi first, translation second.
-5. SGGS only in `sggs` collection.
-6. PDF source: `src/SriGuruGranthSahibJiDarpanEnglish.pdf` — GurbaniAkhar legacy encoding converted to Unicode on parse.
+5. SGGS only (BaniDB source id "G"; `sggs` ChromaDB collection).
+6. Data source: BaniDB v2 API (https://api.banidb.com/v2) is authoritative —
+   synced once into the local corpus; never parse the PDF for production data.
+7. Corpus must pass `python -m src.audit` before embedding/serving.
 
 ## Quick start
 1. `pip install -r requirements.txt`
-2. `python -m src.ingest_pdf` — parses PDF (~6 seconds), saves to data/shabads.jsonl
-3. `python -m src.embed` — builds ChromaDB index
-4. `python -m src.rag "What does Gurbani say about haumai?"`
-5. `uvicorn src.app:app` — start API server
-6. `cd web && npm install && npm run dev` — start frontend
+2. `python -m src.ingest` — ONE-TIME BaniDB sync → data/shabads.jsonl (resumable)
+3. `python -m src.audit` — data-quality gate (non-zero exit on failure)
+4. `python -m src.embed` — build ChromaDB index
+5. `python -m src.rag "What does Gurbani say about haumai?"`
+6. `uvicorn src.app:app` — start API server
+7. `cd web && npm install && npm run dev` — start frontend
 
 ## Key paths
-- SGGS PDF source: src/SriGuruGranthSahibJiDarpanEnglish.pdf
-- Shabad corpus: data/shabads.jsonl
-- Vector index: data/chroma/
-- Config: src/config.py (all tunables, env-overridable)
+- BaniDB client: src/banidb.py (angs/shabads/search endpoints + verse extractors)
+- One-time corpus sync: src/ingest.py; audit: src/audit.py; index: src/embed.py
+- Default retrieval: src/retrieve.py (hybrid dense+BM25+RRF)
+- Optional live retrieval: src/retrieve_live.py (RETRIEVAL_MODE=banidb)
+- Quote verification: src/verify.py (trusted passages → local corpus → BaniDB API)
+- Config: src/config.py (RETRIEVAL_MODE etc., env-overridable)
+- Gap analysis: GAPS.md

@@ -24,10 +24,13 @@ User question  (ਸਵਾਲ)
                                                │
               ┌────────────────────────────────┘
               ▼
-   ┌──────────────────────┐     ┌────────────┐
-   │  Dense retrieval     │     │  BM25      │
-   │  (bge-m3 + ChromaDB) │ ──► │  sparse    │  ──► RRF top-8
-   └──────────────────────┘     └────────────┘
+   ┌───────────────────────────────────────────────┐
+   │  Retrieval (RETRIEVAL_MODE)                   │
+   │  local (default): dense (bge-m3 + ChromaDB)   │
+   │    + BM25 sparse  ──►  RRF top-8              │
+   │    corpus synced once from the BaniDB API     │
+   │  banidb (optional): live /search → /shabads   │
+   └──────────────────────┬────────────────────────┘
                                       │
                                       ▼
                              ┌──────────────────┐
@@ -79,7 +82,8 @@ so refusals stay fast.
 
 | | |
 |---|---|
-| **Corpus** | Complete ਸ੍ਰੀ ਗੁਰੂ ਗ੍ਰੰਥ ਸਾਹਿਬ ਜੀ — 1430 angs, ~2,890 shabads parsed from `SriGuruGranthSahibJiDarpanEnglish.pdf` (no internet required) |
+| **Data source** | [BaniDB v2 API](https://api.banidb.com/v2/api-docs/) — proofread ground truth, synced **once** into the local corpus (canonical shabad boundaries, verseId ordering); optional live-search mode (`RETRIEVAL_MODE=banidb`) |
+| **Data quality** | `python -m src.audit` — structural checks + reference-tuk verification against known-good Gurbani; non-zero exit for CI |
 | **Multilingual** | English · ਪੰਜਾਬੀ (Gurmukhi) · Romanized Punjabi · Hinglish |
 | **Retrieval** | Hybrid dense (BAAI/bge-m3 + ChromaDB) + sparse (BM25) fused with Reciprocal Rank Fusion |
 | **Quote safety** | 3-layer verification — no fabricated ਗੁਰਬਾਣੀ ever reaches the user |
@@ -106,24 +110,37 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env and set ANTHROPIC_API_KEY
 
-# 3. Parse the SGGS PDF  (~6 seconds, no internet needed)
-python -m src.ingest_pdf
-
-# 4. Build the vector index
+# 3. One-time corpus sync from the BaniDB API (throttled + resumable),
+#    then validate and index it
+python -m src.ingest
+python -m src.audit
 python -m src.embed
 
-# 5. Test the CLI  (ਪੁੱਛੋ — ask)
+# 4. Test the CLI  (ਪੁੱਛੋ — ask)
 python -m src.rag "What does Gurbani say about haumai?"
 python -m src.rag "ਨਾਮ ਸਿਮਰਨ ਬਾਰੇ ਕੀ ਕਿਹਾ ਗਿਆ ਹੈ?"
 
-# 6. Start the API server
+# 5. Start the API server
 uvicorn src.app:app --reload
 
-# 7. Start the frontend (separate terminal)
+# 6. Start the frontend (separate terminal)
 cd web
 npm install
 npm run dev
 # Open http://localhost:3000
+```
+
+### Optional: live BaniDB search mode
+
+If a local index can't be built (e.g. constrained hosting), set
+`RETRIEVAL_MODE=banidb` to query the BaniDB search API live per question.
+**Trade-off:** BaniDB search is lexical full-word matching — semantic
+retrieval (dense embeddings, similarity gating) is bypassed, which degrades
+situational, romanized-Punjabi, and Hinglish questions. The default local
+mode is recommended.
+
+```bash
+RETRIEVAL_MODE=banidb uvicorn src.app:app   # no corpus/index needed
 ```
 
 ### Docker
@@ -146,7 +163,7 @@ The FastAPI server needs persistent disk for ChromaDB (`data/chroma/`) and ~1.5 
 2. Set env vars: `ANTHROPIC_API_KEY`, `CORS_ORIGINS=https://akashdatageek.github.io`.
 3. Add a volume mounted at `/app/data`.
 4. Build: `pip install -r requirements.txt`; start: `uvicorn src.app:app --host 0.0.0.0 --port $PORT`.
-5. Run `python -m src.ingest_pdf` + `python -m src.embed` once via a Railway "run" command.
+5. Run `python -m src.ingest && python -m src.audit && python -m src.embed` once via a Railway "run" command (one-time BaniDB sync onto the volume).
 
 **GCP Cloud Run** — see `PLAN.md §13` for full notes.
 
@@ -206,7 +223,8 @@ Exits non-zero if retrieval hit-rate < 80 % or any non-adversarial answer contai
 | 3 | **ਮਾਡਲ ਦੱਸਦਾ ਹੈ, ਰਾਜ ਨਹੀਂ ਕਰਦਾ** — The model describes; it never rules | Conduct questions always redirect to the [Sikh Rehat Maryada](https://www.sgpc.net/sikhism/sikh-rehat-maryada-section-one.asp) |
 | 4 | **ਗੁਰਮੁਖੀ ਪਹਿਲਾਂ** — Gurmukhi first, translation second | Original scripture in Gurmukhi script leads every citation |
 | 5 | **ਕੇਵਲ ਸ੍ਰੀ ਗੁਰੂ ਗ੍ਰੰਥ ਸਾਹਿਬ ਜੀ** — SGGS only | Only SGGS content in the `sggs` ChromaDB collection |
-| 6 | **PDF ਸਰੋਤ** — Offline PDF source | Corpus parsed from `SriGuruGranthSahibJiDarpanEnglish.pdf` — no external API calls needed |
+| 6 | **BaniDB ਸਰੋਤ** — BaniDB is authoritative | The corpus is synced once from the proofread [BaniDB v2 API](https://api.banidb.com/v2/api-docs/) (canonical shabad boundaries, verseId order) — never from the PDF |
+| 7 | **ਸ਼ੁੱਧਤਾ ਜਾਂਚ** — Corpus must pass the audit | `python -m src.audit` validates ang coverage, writers, raags, and reference tuks before the corpus is embedded |
 
 ---
 
@@ -217,7 +235,11 @@ Gurbani-Guidance/
 ├── src/
 │   ├── config.py        — all tunables (env-overridable)
 │   ├── corpus.py        — Pydantic models + make_windows()
-│   ├── ingest_pdf.py    — PDF parser → data/shabads.jsonl
+│   ├── banidb.py        — BaniDB v2 API client (angs/shabads/search)
+│   ├── ingest.py        — one-time BaniDB sync → data/shabads.jsonl
+│   ├── audit.py         — corpus data-quality audit (CI gate)
+│   ├── retrieve_live.py — optional live-search backend (RETRIEVAL_MODE=banidb)
+│   ├── ingest_pdf.py    — PDF parser (last-resort offline fallback)
 │   ├── embed.py         — bge-m3 → ChromaDB
 │   ├── retrieve.py      — hybrid RRF retrieval
 │   ├── verify.py        — 3-layer quote verification
@@ -259,7 +281,9 @@ Gurbani-Guidance/
 | `GEMINI_MODEL` | `gemini-2.5-pro` | Gemini generation model |
 | `GEMINI_CLASSIFIER_MODEL` | `gemini-2.5-flash` | Gemini classifier model |
 | `MAX_TOKENS` | `4000` | Max generation tokens |
-| `SIMILARITY_THRESHOLD` | `0.35` | Min cosine similarity; below → out-of-scope |
+| `RETRIEVAL_MODE` | `local` | `local` = hybrid dense+BM25 semantic RAG (default); `banidb` = live lexical search, no index |
+| `BANIDB_SEARCH_RESULTS` | `20` | Results per BaniDB search call (live mode / verification fallback) |
+| `SIMILARITY_THRESHOLD` | `0.47` | Min cosine similarity; below → out-of-scope |
 | `TOP_K` | `8` | Passages returned to the LLM |
 | `PDF_PATH` | `src/SriGuruGranthSahibJiDarpanEnglish.pdf` | Path to SGGS source PDF |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |

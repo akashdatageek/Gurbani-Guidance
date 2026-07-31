@@ -1,4 +1,7 @@
-data/
+# data/ is ignored except the BaniDB-synced corpus snapshot
+# (a bare `data/` would stop git descending into it, breaking the negation)
+data/*
+!data/shabads.jsonl.gz
 .env
 __pycache__/
 *.pyc

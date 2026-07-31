@@ -1,4 +1,15 @@
-"""BaniDB crawler — downloads all 1430 angs of SGGS and builds shabads.jsonl.
+"""One-time BaniDB corpus sync — builds data/shabads.jsonl for the default
+semantic pipeline (RETRIEVAL_MODE=local).
+
+This is a single, throttled, resumable sync of Sri Guru Granth Sahib Ji from
+the BaniDB v2 API (the authoritative, proofread source) — NOT an ongoing
+crawler: run it once (≈1430 requests at CRAWL_DELAY spacing), and every ang
+is cached on disk so re-runs only fetch what's missing. The built corpus
+carries canonical shabadId boundaries and verseId ordering, then feeds
+src.audit → src.embed for hybrid dense+BM25 retrieval.
+
+(RETRIEVAL_MODE=banidb skips this entirely and queries the search API live,
+at the cost of losing semantic retrieval.)
 
 Usage:
     python -m src.ingest [--start ANG] [--end ANG] [--force] [--build-only] [--verify-cache]
@@ -9,17 +20,10 @@ import json
 import logging
 import os
 import time
-from collections import defaultdict, OrderedDict
+from collections import OrderedDict
 
-import requests
-
-from src.config import (
-    BANIDB_BASE,
-    BANIDB_USER_AGENT,
-    CRAWL_DELAY,
-    RAW_ANGS_DIR,
-    SHABADS_FILE,
-)
+from src import banidb
+from src.config import CRAWL_DELAY, RAW_ANGS_DIR, SHABADS_FILE
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,70 +31,44 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-MAX_RETRIES = 4
-BACKOFF_BASE = 1.0
-
 
 # ---------------------------------------------------------------------------
-# BaniDB fetching
+# Crawl (with resumable on-disk cache)
 # ---------------------------------------------------------------------------
 
-def _fetch_ang(session: requests.Session, ang: int) -> dict:
-    url = f"{BANIDB_BASE}/angs/{ang}/G"
-    last_exc: Exception | None = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            resp = session.get(url, timeout=30)
-            resp.raise_for_status()
-            data = resp.json()
-            # Validate: must have at least one verse
-            if not data.get("verses"):
-                raise ValueError(f"Empty verses array in response for ang {ang}")
-            return data
-        except Exception as exc:
-            last_exc = exc
-            wait = BACKOFF_BASE * (2 ** attempt)
-            logger.warning(
-                "Ang %d attempt %d failed (%s); retrying in %.1fs",
-                ang, attempt + 1, exc, wait,
-            )
-            time.sleep(wait)
-    raise RuntimeError(f"Failed to fetch ang {ang} after {MAX_RETRIES} attempts") from last_exc
+def _cache_path(ang: int) -> str:
+    return os.path.join(RAW_ANGS_DIR, f"{ang:04d}.json")
+
+
+def _cache_is_valid(path: str) -> bool:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return bool(banidb.extract_verses(json.load(f)))
+    except (json.JSONDecodeError, OSError):
+        return False
 
 
 def crawl(start: int = 1, end: int = 1430, force: bool = False) -> None:
     os.makedirs(RAW_ANGS_DIR, exist_ok=True)
-    session = requests.Session()
-    session.headers.update({"User-Agent": BANIDB_USER_AGENT})
-
-    total = end - start + 1
-    fetched = skipped = 0
+    fetched = skipped = failed = 0
 
     for ang in range(start, end + 1):
-        cache_path = os.path.join(RAW_ANGS_DIR, f"{ang:04d}.json")
-        if not force and os.path.exists(cache_path):
-            # Quick validity check: file must be non-empty valid JSON with verses
-            try:
-                with open(cache_path, "r", encoding="utf-8") as f:
-                    cached = json.load(f)
-                if cached.get("verses"):
-                    skipped += 1
-                    if (ang - start + 1) % 50 == 0:
-                        logger.info("Progress: ang %d / %d (skipped %d cached)", ang, end, skipped)
-                    continue
-                else:
-                    logger.warning("Cached ang %d has empty verses — re-fetching", ang)
-            except (json.JSONDecodeError, OSError):
-                logger.warning("Corrupt cache for ang %d — re-fetching", ang)
+        cache_path = _cache_path(ang)
+        if not force and os.path.exists(cache_path) and _cache_is_valid(cache_path):
+            skipped += 1
+            if (ang - start + 1) % 50 == 0:
+                logger.info("Progress: ang %d / %d (skipped %d cached)", ang, end, skipped)
+            continue
 
         try:
-            data = _fetch_ang(session, ang)
+            data = banidb.fetch_ang(ang)
         except RuntimeError as exc:
             logger.error("Skipping ang %d: %s", ang, exc)
+            failed += 1
             continue
 
         with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=None)
+            json.dump(data, f, ensure_ascii=False)
 
         fetched += 1
         if ang % 50 == 0 or ang == end:
@@ -98,94 +76,20 @@ def crawl(start: int = 1, end: int = 1430, force: bool = False) -> None:
 
         time.sleep(CRAWL_DELAY)
 
-    logger.info("Crawl complete: %d fetched, %d skipped (of %d total)", fetched, skipped, total)
+    logger.info(
+        "Crawl complete: %d fetched, %d skipped, %d failed (of %d total)",
+        fetched, skipped, failed, end - start + 1,
+    )
+    if failed:
+        logger.warning("Re-run the same command to retry the %d failed ang(s).", failed)
 
 
 def verify_cache(start: int = 1, end: int = 1430) -> list[int]:
     """Check cached files for validity; return list of missing/corrupt angs."""
-    bad = []
-    for ang in range(start, end + 1):
-        path = os.path.join(RAW_ANGS_DIR, f"{ang:04d}.json")
-        if not os.path.exists(path):
-            bad.append(ang)
-            continue
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                d = json.load(f)
-            if not d.get("verses"):
-                bad.append(ang)
-        except Exception:
-            bad.append(ang)
-    return bad
-
-
-# ---------------------------------------------------------------------------
-# Parsing helpers
-# ---------------------------------------------------------------------------
-
-def _get_gurmukhi(verse_obj: dict) -> str:
-    inner = verse_obj.get("verse", {})
-    if isinstance(inner, dict):
-        text = inner.get("unicode") or inner.get("verse", "")
-    else:
-        text = str(inner) if inner else ""
-    if not text:
-        text = verse_obj.get("unicode", "")
-    return (text or "").strip()
-
-
-def _get_transliteration(verse_obj: dict) -> str:
-    inner = verse_obj.get("verse", {})
-    if isinstance(inner, dict):
-        translit = (
-            inner.get("transliterations", {})
-            .get("english", {})
-            .get("transliteration", "")
-        )
-        if not translit:
-            translit = inner.get("transliteration", "")
-    else:
-        translit = ""
-    if not translit:
-        translit = verse_obj.get("transliteration", "")
-    return (translit or "").strip()
-
-
-def _get_all_translations_en(verse_obj: dict) -> dict[str, str]:
-    """Return all available English translations keyed by source (bdb/ms/ssk)."""
-    translation_block = verse_obj.get("translation", {})
-    en_block = translation_block.get("en", {}) if isinstance(translation_block, dict) else {}
-    result: dict[str, str] = {}
-    for source in ("bdb", "ms", "ssk"):
-        val = en_block.get(source, {})
-        text = val.get("translation", "") if isinstance(val, dict) else str(val) if val else ""
-        if text:
-            result[source] = text.strip()
-    return result
-
-
-def _get_raag(verse_obj: dict) -> str:
-    raag = verse_obj.get("raag", {})
-    if isinstance(raag, dict):
-        return (raag.get("english") or raag.get("gurmukhi") or "Unknown").strip()
-    return str(raag).strip() if raag else "Unknown"
-
-
-def _get_writer(verse_obj: dict) -> str:
-    writer = verse_obj.get("writer", {})
-    if isinstance(writer, dict):
-        return (writer.get("english") or writer.get("gurmukhi") or "Unknown").strip()
-    return str(writer).strip() if writer else "Unknown"
-
-
-def _get_line_no(verse_obj: dict) -> int:
-    """Return the verse's line number within its ang for ordering."""
-    return (
-        verse_obj.get("lineNo")
-        or verse_obj.get("verseNo")
-        or verse_obj.get("order")
-        or 0
-    )
+    return [
+        ang for ang in range(start, end + 1)
+        if not (os.path.exists(_cache_path(ang)) and _cache_is_valid(_cache_path(ang)))
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -196,11 +100,11 @@ def build_shabads(start: int = 1, end: int = 1430) -> None:
     os.makedirs(os.path.dirname(SHABADS_FILE) or ".", exist_ok=True)
 
     # OrderedDict preserves first-appearance order as we read angs 1→1430
-    shabad_verses: OrderedDict[int, list[dict]] = OrderedDict()
+    shabad_verses: OrderedDict[int, dict[int, dict]] = OrderedDict()
 
     missing = []
     for ang in range(start, end + 1):
-        cache_path = os.path.join(RAW_ANGS_DIR, f"{ang:04d}.json")
+        cache_path = _cache_path(ang)
         if not os.path.exists(cache_path):
             missing.append(ang)
             continue
@@ -209,37 +113,39 @@ def build_shabads(start: int = 1, end: int = 1430) -> None:
                 data = json.load(f)
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("Cannot read %s: %s", cache_path, exc)
+            missing.append(ang)
             continue
 
-        for v in data.get("verses", []):
-            shabad_id = v.get("shabadId") or v.get("shabad_id")
+        for v in banidb.extract_verses(data):
+            shabad_id = banidb.verse_shabad_id(v)
             if shabad_id is None:
                 continue
-            if shabad_id not in shabad_verses:
-                shabad_verses[shabad_id] = []
-            shabad_verses[shabad_id].append(v)
+            # Key inner dict by verseId to dedupe verses that appear in
+            # more than one cached ang payload (keep the first occurrence).
+            shabad_verses.setdefault(shabad_id, {}).setdefault(banidb.verse_id(v), v)
 
     if missing:
         logger.warning(
-            "Missing %d ang file(s) (first: %d). Run crawl first.", len(missing), missing[0]
+            "Missing/corrupt %d ang file(s) (first: %d). Run `python -m src.ingest` "
+            "again to fetch them — the corpus will be INCOMPLETE until then.",
+            len(missing), missing[0],
         )
 
     total_verses = sum(len(vv) for vv in shabad_verses.values())
-    logger.info("Grouping %d verses into shabads …", total_verses)
+    logger.info("Grouping %d verses into %d shabads …", total_verses, len(shabad_verses))
 
     written = 0
     with open(SHABADS_FILE, "w", encoding="utf-8") as out:
-        for shabad_id, verses in shabad_verses.items():
-            if not verses:
-                continue
-
-            # Sort verses within shabad by lineNo to guarantee canonical order
-            verses_sorted = sorted(verses, key=_get_line_no)
+        for shabad_id, verses_by_id in shabad_verses.items():
+            # Canonical order: global verseId (falls back to ang+lineNo)
+            verses_sorted = sorted(verses_by_id.values(), key=banidb.verse_order_key)
 
             first = verses_sorted[0]
-            ang = first.get("pageNo") or first.get("ang") or 0
-            raag = _get_raag(first)
-            writer = _get_writer(first)
+            ang = banidb.verse_ang(first)
+            # Header lines (e.g. "ਸਲੋਕੁ ॥") open many shabads with null
+            # writer/raag — take the first verse that carries each field.
+            raag = next((r for v in verses_sorted if (r := banidb.verse_raag(v))), "Unknown")
+            writer = next((w for v in verses_sorted if (w := banidb.verse_writer(v))), "Unknown")
 
             lines = []
             gurmukhi_parts: list[str] = []
@@ -247,26 +153,35 @@ def build_shabads(start: int = 1, end: int = 1430) -> None:
             translation_parts: list[str] = []
 
             for v in verses_sorted:
-                g = _get_gurmukhi(v)
-                t = _get_transliteration(v)
-                translations = _get_all_translations_en(v)
-                e = translations.get("bdb") or translations.get("ms") or translations.get("ssk") or ""
-                line_ang = v.get("pageNo") or v.get("ang") or ang
-
+                g = banidb.verse_gurmukhi(v)
                 if not g:
                     continue
+                t = banidb.verse_transliteration(v)
+                translations = banidb.verse_translations_en(v)
+                e = translations.get("bdb") or translations.get("ms") or translations.get("ssk") or ""
 
                 line_obj: dict = {
                     "gurmukhi": g,
                     "transliteration": t,
                     "translation_en": e,
-                    "ang": line_ang,
+                    "ang": banidb.verse_ang(v) or ang,
+                    "verse_id": banidb.verse_id(v),
                 }
-                # Store extra translations when they differ materially from primary
-                if translations.get("ms") and translations.get("ms") != e:
+                # Store extra translations when they differ from the primary
+                if translations.get("ms") and translations["ms"] != e:
                     line_obj["translation_en_ms"] = translations["ms"]
-                if translations.get("ssk") and translations.get("ssk") != e:
+                if translations.get("ssk") and translations["ssk"] != e:
                     line_obj["translation_en_ssk"] = translations["ssk"]
+
+                # Punjabi vyakhya/teeka (Unicode): Sahib Singh Darpan, Faridkot
+                # Teeka, and Sahib Singh pad-arth (word meanings)
+                vyakhya = banidb.verse_vyakhya(v)
+                if vyakhya.get("ss"):
+                    line_obj["vyakhya_ss"] = vyakhya["ss"]
+                if vyakhya.get("ft"):
+                    line_obj["vyakhya_ft"] = vyakhya["ft"]
+                if vyakhya.get("pss"):
+                    line_obj["vyakhya_pss"] = vyakhya["pss"]
 
                 lines.append(line_obj)
                 gurmukhi_parts.append(g)
@@ -282,14 +197,15 @@ def build_shabads(start: int = 1, end: int = 1430) -> None:
                 "raag": raag,
                 "writer": writer,
                 "gurmukhi": " ".join(gurmukhi_parts),
-                "transliteration": " ".join(translit_parts),
-                "translation_en": " ".join(translation_parts),
+                "transliteration": " ".join(p for p in translit_parts if p),
+                "translation_en": " ".join(p for p in translation_parts if p),
                 "lines": lines,
             }
             out.write(json.dumps(record, ensure_ascii=False) + "\n")
             written += 1
 
     logger.info("Wrote %d shabads to %s", written, SHABADS_FILE)
+    logger.info("Next: `python -m src.audit` to validate, then `python -m src.embed`.")
 
 
 # ---------------------------------------------------------------------------

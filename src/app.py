@@ -29,6 +29,7 @@ from src.config import (
     HISTORY_MAX_TURNS,
     RATE_LIMIT_MAX,
     RATE_LIMIT_WINDOW,
+    RETRIEVAL_MODE,
     SHABADS_FILE,
 )
 from src.corpus import corpus_stats
@@ -47,9 +48,20 @@ async def lifespan(app: FastAPI):
     if not ANTHROPIC_API_KEY:
         logger.warning("ANTHROPIC_API_KEY is not set — /ask will fail until it is configured.")
 
+    if RETRIEVAL_MODE == "banidb":
+        # Live BaniDB API mode: no local corpus or index needed.
+        _index_ready = True
+        logger.info("Retrieval mode: live BaniDB API — no local index required.")
+        yield
+        return
+
+    from src.corpus import ensure_corpus
+    ensure_corpus(SHABADS_FILE)
     if not os.path.exists(SHABADS_FILE):
         logger.warning(
-            "Corpus not found at %s. Run `python -m src.ingest_pdf` then `python -m src.embed`.",
+            "Corpus not found at %s. Run the one-time BaniDB sync: "
+            "`python -m src.ingest && python -m src.audit && python -m src.embed` "
+            "— or set RETRIEVAL_MODE=banidb for (degraded) live search.",
             SHABADS_FILE,
         )
     else:
@@ -138,15 +150,20 @@ class AskResponse(BaseModel):
 
 @app.get("/health")
 async def health() -> dict:
-    return {"ok": True, "index_ready": _index_ready}
+    return {"ok": True, "index_ready": _index_ready, "retrieval_mode": RETRIEVAL_MODE}
 
 
 @app.get("/stats")
 async def stats() -> dict:
     import os
     if not os.path.exists(SHABADS_FILE):
-        raise HTTPException(503, detail="Corpus not built. Run python -m src.ingest_pdf first.")
-    return corpus_stats()
+        if RETRIEVAL_MODE == "banidb":
+            return {
+                "retrieval_mode": "banidb",
+                "source": "BaniDB v2 API (live, no local corpus)",
+            }
+        raise HTTPException(503, detail="Corpus not built for RETRIEVAL_MODE=local.")
+    return {"retrieval_mode": RETRIEVAL_MODE, **corpus_stats()}
 
 
 @app.post("/ask", response_model=AskResponse)
@@ -158,7 +175,10 @@ async def ask_endpoint(request: Request, body: AskRequest) -> AskResponse:
     if not _index_ready:
         raise HTTPException(
             503,
-            detail="Search index not ready. Run `python -m src.ingest_pdf` and `python -m src.embed` first.",
+            detail=(
+                "Search index not ready. Run the one-time BaniDB sync: "
+                "`python -m src.ingest && python -m src.audit && python -m src.embed`."
+            ),
         )
 
     from src.rag import ask, deep_ask

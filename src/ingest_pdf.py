@@ -1,5 +1,10 @@
 """Parse SriGuruGranthSahibJiDarpanEnglish.pdf → data/shabads.jsonl
 
+OFFLINE FALLBACK ONLY — the primary corpus builder is `python -m src.ingest`
+(BaniDB API), which uses proofread Unicode text and canonical shabad
+boundaries. This PDF path relies on legacy-font conversion and boundary
+heuristics; always run `python -m src.audit` on its output before use.
+
 The PDF uses GurbaniAkhar legacy ASCII-mapped Gurmukhi font encoding.
 This script converts it to Unicode Gurmukhi and groups verses into shabads.
 
@@ -78,6 +83,8 @@ _CHAR_MAP: dict[str, str] = {
     "R": "੍ਰ",   # pair-a (subscript ra)
     "H": "੍ਹ",   # pair-ha (subscript ha)
     "V": "੍ਵ",   # pair-va (subscript va)
+    "@": "ੑ",    # udaat (U+0A51, e.g. ਸਾਮੑੈ)
+    "\\": "ਞ",   # nyanya (e.g. ਸੁੰਞੀ, ਵੰਞਣਾ)
     # Addak (gemination)
     "^": "ੱ",    # addak
     "~": "ੱ",    # addak variant
