@@ -74,7 +74,7 @@ def init() -> None:
     if not os.path.exists(SHABADS_FILE):
         raise FileNotFoundError(
             f"Corpus not found at {SHABADS_FILE}. Run `python -m src.ingest` "
-            "(BaniDB, primary) or `python -m src.ingest_pdf` (offline fallback) first."
+            "(one-time BaniDB sync) first."
         )
 
     logger.info("Loading embedding model %s …", EMBED_MODEL)

@@ -1,10 +1,7 @@
 # ── Core dependencies ────────────────────────────────────────────────────────
 
-# BaniDB API client / crawler (primary corpus source)
+# BaniDB API client (corpus sync + live mode + verification fallback)
 requests>=2.31
-
-# PDF parsing (offline fallback corpus source)
-pymupdf>=1.24
 
 # Vector store
 chromadb>=0.5

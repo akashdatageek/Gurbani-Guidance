@@ -163,8 +163,3 @@ def test_audit_flags_ascii_residue(tmp_path):
     assert any("ASCII" in f or "residue" in f for f in result.failures)
 
 
-def test_pdf_legacy_conversion_covers_udaat_and_nyanya():
-    from src.ingest_pdf import _legacy_to_unicode
-
-    assert _legacy_to_unicode("suM\\I") == "ਸੁੰਞੀ"          # \ → ਞ
-    assert "ੑ" in _legacy_to_unicode("swm@Y")               # @ → udaat U+0A51

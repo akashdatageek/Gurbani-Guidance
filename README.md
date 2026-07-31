@@ -223,7 +223,7 @@ Exits non-zero if retrieval hit-rate < 80 % or any non-adversarial answer contai
 | 3 | **ਮਾਡਲ ਦੱਸਦਾ ਹੈ, ਰਾਜ ਨਹੀਂ ਕਰਦਾ** — The model describes; it never rules | Conduct questions always redirect to the [Sikh Rehat Maryada](https://www.sgpc.net/sikhism/sikh-rehat-maryada-section-one.asp) |
 | 4 | **ਗੁਰਮੁਖੀ ਪਹਿਲਾਂ** — Gurmukhi first, translation second | Original scripture in Gurmukhi script leads every citation |
 | 5 | **ਕੇਵਲ ਸ੍ਰੀ ਗੁਰੂ ਗ੍ਰੰਥ ਸਾਹਿਬ ਜੀ** — SGGS only | Only SGGS content in the `sggs` ChromaDB collection |
-| 6 | **BaniDB ਸਰੋਤ** — BaniDB is authoritative | The corpus is synced once from the proofread [BaniDB v2 API](https://api.banidb.com/v2/api-docs/) (canonical shabad boundaries, verseId order) — never from the PDF |
+| 6 | **BaniDB ਸਰੋਤ** — BaniDB is authoritative | The corpus is synced once from the proofread [BaniDB v2 API](https://api.banidb.com/v2/api-docs/) (canonical shabad boundaries, verseId order) and ships in the repo as `data/shabads.jsonl.gz` |
 | 7 | **ਸ਼ੁੱਧਤਾ ਜਾਂਚ** — Corpus must pass the audit | `python -m src.audit` validates ang coverage, writers, raags, and reference tuks before the corpus is embedded |
 
 ---
@@ -239,13 +239,13 @@ Gurbani-Guidance/
 │   ├── ingest.py        — one-time BaniDB sync → data/shabads.jsonl
 │   ├── audit.py         — corpus data-quality audit (CI gate)
 │   ├── retrieve_live.py — optional live-search backend (RETRIEVAL_MODE=banidb)
-│   ├── ingest_pdf.py    — PDF parser (last-resort offline fallback)
 │   ├── embed.py         — bge-m3 → ChromaDB
 │   ├── retrieve.py      — hybrid RRF retrieval
 │   ├── verify.py        — 3-layer quote verification
 │   ├── rag.py           — 6-agent RAG pipeline
-│   ├── app.py           — FastAPI server
-│   └── SriGuruGranthSahibJiDarpanEnglish.pdf  — SGGS source PDF
+│   └── app.py           — FastAPI server
+├── data/
+│   └── shabads.jsonl.gz — BaniDB-synced corpus snapshot (auto-inflated)
 ├── web/                 — Next.js 14 chat UI
 │   ├── app/
 │   │   ├── page.tsx     — main chat interface
@@ -285,7 +285,6 @@ Gurbani-Guidance/
 | `BANIDB_SEARCH_RESULTS` | `20` | Results per BaniDB search call (live mode / verification fallback) |
 | `SIMILARITY_THRESHOLD` | `0.47` | Min cosine similarity; below → out-of-scope |
 | `TOP_K` | `8` | Passages returned to the LLM |
-| `PDF_PATH` | `src/SriGuruGranthSahibJiDarpanEnglish.pdf` | Path to SGGS source PDF |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
 | `RATE_LIMIT_MAX` | `10` | Max requests per IP per window |
 | `RATE_LIMIT_WINDOW` | `60` | Rate-limit window in seconds |

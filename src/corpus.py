@@ -29,7 +29,7 @@ class ShabadLine(BaseModel):
     translation_en: str
     # Per-line ang — the actual ang this line appears on (may differ from shabad start ang)
     ang: int = 0
-    # BaniDB global verse id (0 when built from the PDF fallback)
+    # BaniDB global verse id
     verse_id: int = 0
     # Additional translations (populated when available)
     translation_en_ms: str = ""   # Manmohan Singh

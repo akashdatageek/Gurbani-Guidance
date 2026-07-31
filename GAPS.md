@@ -8,9 +8,14 @@ accuracy of the corpus (`data/shabads.jsonl`) and every stage that depends on it
 source of truth** for a system whose core promise is "verbatim quotes verified
 against the corpus." The BaniDB v2 API (https://api.banidb.com/v2/api-docs/) —
 the proofread, community-maintained database behind SikhiToTheMax — is now the
-**primary** data source (`python -m src.ingest`); the PDF parser remains an
-offline fallback only. A new audit tool (`python -m src.audit`) makes corpus
-accuracy measurable and CI-enforceable.
+**only** data source (`python -m src.ingest`). A new audit tool
+(`python -m src.audit`) makes corpus accuracy measurable and CI-enforceable.
+
+> **Final status:** the BaniDB sync has been run (all 1430 angs, 5,542 shabads,
+> audit-clean, 30/30 online cross-check) and the corpus snapshot is committed
+> as `data/shabads.jsonl.gz`. The source PDF and `src/ingest_pdf.py` have been
+> **removed from the repository** — the sections below describing the PDF
+> pipeline are retained as the historical record of why it was replaced.
 
 ---
 

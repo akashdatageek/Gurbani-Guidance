@@ -72,7 +72,7 @@ def build_index(reset: bool = False) -> None:
     if not os.path.exists(SHABADS_FILE):
         raise FileNotFoundError(
             f"Corpus not found at {SHABADS_FILE}. Run `python -m src.ingest` "
-            "(BaniDB, primary) or `python -m src.ingest_pdf` (offline fallback) first."
+            "(one-time BaniDB sync) first."
         )
 
     os.makedirs(CHROMA_DIR, exist_ok=True)
