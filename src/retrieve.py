@@ -58,6 +58,41 @@ _bm25_index: Any = None
 _bm25_passages: list[dict] = []
 
 
+# Bump when the BM25 tokenization or passage schema changes — stale pickles
+# with an older version are rebuilt.
+_BM25_CACHE_VERSION = 2
+
+
+def _build_bm25(BM25Okapi) -> tuple[Any, list[dict]]:
+    corpus_tokens: list[list[str]] = []
+    passages: list[dict] = []
+    for shabad in load_shabads(SHABADS_FILE):
+        windows = make_windows(shabad.lines, window_size=WINDOW_SIZE, overlap=WINDOW_OVERLAP)
+        for win_idx, window in enumerate(windows):
+            passage_id = f"{shabad.shabad_id}-{win_idx}"
+            # Gurmukhi included so ਪੰਜਾਬੀ queries get sparse support too
+            text = " ".join(
+                f"{line.gurmukhi} {line.transliteration} {line.translation_en}"
+                for line in window
+            )
+            # Strip punctuation before tokenizing so "naam." == "naam"
+            tokens = _PUNCT_RE.sub(" ", text.lower()).split()
+            corpus_tokens.append(tokens)
+            passages.append(
+                {
+                    "id": passage_id,
+                    "shabad_id": shabad.shabad_id,
+                    "ang": shabad.ang,
+                    "raag": shabad.raag,
+                    "writer": shabad.writer,
+                    "gurmukhi": [line.gurmukhi for line in window],
+                    "translation_en": [line.translation_en for line in window],
+                    "line_angs": [line.ang for line in window],
+                }
+            )
+    return BM25Okapi(corpus_tokens), passages
+
+
 def init() -> None:
     global _embedder, _collection, _bm25_index, _bm25_passages
     if _embedder is not None:
@@ -87,35 +122,42 @@ def init() -> None:
         metadata={"hnsw:space": "cosine"},
     )
 
-    logger.info("Building BM25 index …")
-    corpus_tokens: list[list[str]] = []
-    _bm25_passages = []
+    # BM25: load from pickle cache when fresh, else build and cache.
+    # Rebuilding re-windows all ~60K lines — pointless work on every boot.
+    import pickle
+    cache_path = os.path.join(os.path.dirname(SHABADS_FILE) or ".", "bm25_cache.pkl")
+    corpus_mtime = os.path.getmtime(SHABADS_FILE)
+    cached = None
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "rb") as f:
+                cached = pickle.load(f)
+            if cached.get("version") != _BM25_CACHE_VERSION or cached.get("mtime") != corpus_mtime:
+                cached = None
+        except Exception:  # noqa: BLE001 — corrupt cache: rebuild
+            cached = None
 
-    for shabad in load_shabads(SHABADS_FILE):
-        windows = make_windows(shabad.lines, window_size=WINDOW_SIZE, overlap=WINDOW_OVERLAP)
-        for win_idx, window in enumerate(windows):
-            passage_id = f"{shabad.shabad_id}-{win_idx}"
-            text = " ".join(
-                f"{line.transliteration} {line.translation_en}" for line in window
-            )
-            # Strip punctuation before tokenizing so "naam." == "naam"
-            tokens = _PUNCT_RE.sub(" ", text.lower()).split()
-            corpus_tokens.append(tokens)
-            _bm25_passages.append(
-                {
-                    "id": passage_id,
-                    "shabad_id": shabad.shabad_id,
-                    "ang": shabad.ang,
-                    "raag": shabad.raag,
-                    "writer": shabad.writer,
-                    "gurmukhi": [line.gurmukhi for line in window],
-                    "translation_en": [line.translation_en for line in window],
-                    "line_angs": [line.ang for line in window],
-                }
-            )
-
-    _bm25_index = BM25Okapi(corpus_tokens)
-    logger.info("BM25 index built with %d passages.", len(_bm25_passages))
+    if cached:
+        _bm25_index = cached["index"]
+        _bm25_passages = cached["passages"]
+        logger.info("BM25 index loaded from cache (%d passages).", len(_bm25_passages))
+    else:
+        logger.info("Building BM25 index …")
+        _bm25_index, _bm25_passages = _build_bm25(BM25Okapi)
+        try:
+            with open(cache_path, "wb") as f:
+                pickle.dump(
+                    {
+                        "version": _BM25_CACHE_VERSION,
+                        "mtime": corpus_mtime,
+                        "index": _bm25_index,
+                        "passages": _bm25_passages,
+                    },
+                    f,
+                )
+        except OSError as exc:
+            logger.warning("Could not write BM25 cache: %s", exc)
+        logger.info("BM25 index built with %d passages.", len(_bm25_passages))
 
 
 def _ensure_init() -> None:
@@ -165,7 +207,10 @@ def _matches_filters(passage: dict, filters: dict) -> bool:
         return False
     if "ang_range" in filters:
         start, end = filters["ang_range"]
-        if not (start <= passage["ang"] <= end):
+        # Overlap test on the window's own ang span — long banis span many
+        # angs, so the shabad start ang alone mis-filters deep windows.
+        angs = [a for a in passage.get("line_angs", []) if a] or [passage["ang"]]
+        if not (min(angs) <= end and max(angs) >= start):
             return False
     return True
 
@@ -284,8 +329,9 @@ def _build_chroma_where(filters: dict) -> dict | None:
         conditions.append({"raag": {"$eq": filters["raag"]}})
     if "ang_range" in filters:
         start, end = filters["ang_range"]
-        conditions.append({"ang": {"$gte": start}})
-        conditions.append({"ang": {"$lte": end}})
+        # Window [ang_start, ang_end] must OVERLAP the requested range
+        conditions.append({"ang_start": {"$lte": end}})
+        conditions.append({"ang_end": {"$gte": start}})
     if not conditions:
         return None
     return conditions[0] if len(conditions) == 1 else {"$and": conditions}

@@ -32,18 +32,16 @@ logger = logging.getLogger(__name__)
 
 
 def _make_passage_text(window: list[ShabadLine]) -> str:
-    """Create embed text: 'transliteration | translation' per line; skip empty parts."""
+    """Embed text: 'gurmukhi | transliteration | translation' per line.
+
+    Gurmukhi is included so ਪੰਜਾਬੀ queries match on script, not only on
+    bge-m3's cross-lingual alignment of the transliteration/translation.
+    """
     parts = []
     for line in window:
-        segments = []
-        if line.transliteration:
-            segments.append(line.transliteration)
-        if line.translation_en:
-            segments.append(line.translation_en)
+        segments = [s for s in (line.gurmukhi, line.transliteration, line.translation_en) if s]
         if segments:
             parts.append(" | ".join(segments))
-        elif line.gurmukhi:
-            parts.append(line.gurmukhi)  # last-resort: use Gurmukhi itself
     return "\n".join(parts)
 
 
@@ -109,10 +107,15 @@ def build_index(reset: bool = False) -> None:
             ids.append(passage_id)
             texts.append(_make_passage_text(window))
             documents.append(_make_passage_document(window))
+            # Window-level ang span: long banis span many angs, so filtering
+            # by the shabad's START ang silently mis-filters deep windows.
+            window_angs = [l.ang for l in window if l.ang] or [shabad.ang]
             metadatas.append(
                 {
                     "shabad_id": shabad.shabad_id,
                     "ang": shabad.ang,
+                    "ang_start": min(window_angs),
+                    "ang_end": max(window_angs),
                     "raag": shabad.raag,
                     "writer": shabad.writer,
                     "window": win_idx,

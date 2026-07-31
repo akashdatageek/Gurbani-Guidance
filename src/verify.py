@@ -94,15 +94,15 @@ _corpus_cache = _build_corpus
 # Online (BaniDB) verification fallback — cached per process
 # ---------------------------------------------------------------------------
 
-# normalized text -> (exact_angs, found_as_substring)
-_online_cache: dict[str, tuple[set[int], bool]] = {}
+# normalized text -> (exact_angs, substring_angs)
+_online_cache: dict[str, tuple[set[int], set[int]]] = {}
 
 
-def _banidb_find(norm: str) -> tuple[set[int], bool]:
+def _banidb_find(norm: str) -> tuple[set[int], set[int]]:
     """Look a normalized Gurmukhi line up via the BaniDB search API.
 
-    Returns (angs where it appears verbatim, whether it appears as a substring
-    of some verse). Returns (set(), False) when unreachable — fail-closed.
+    Returns (angs where it appears verbatim, angs of verses containing it as
+    a substring). Returns (set(), set()) when unreachable — fail-closed.
     """
     if norm in _online_cache:
         return _online_cache[norm]
@@ -112,20 +112,20 @@ def _banidb_find(norm: str) -> tuple[set[int], bool]:
         query = re.sub(r"[॥।]+|[੦-੯]+", " ", norm)
         query = re.sub(r"\s+", " ", query).strip()
         if not query:
-            return set(), False
+            return set(), set()
         resp = banidb.search(query, searchtype=banidb.SEARCH_FULL_WORD_GURMUKHI, results=20)
         exact_angs: set[int] = set()
-        substring = False
+        sub_angs: set[int] = set()
         for v in banidb.extract_verses(resp):
             vg = normalize_gurmukhi(banidb.verse_gurmukhi(v))
             if vg == norm:
                 exact_angs.add(banidb.verse_ang(v))
             elif norm in vg:
-                substring = True
-        result = (exact_angs, substring)
+                sub_angs.add(banidb.verse_ang(v))
+        result = (exact_angs, sub_angs)
     except Exception as exc:  # noqa: BLE001 — any failure means "unverified"
         logger.warning("BaniDB verification lookup failed (%s) — quote will be stripped.", exc)
-        result = (set(), False)
+        result = (set(), set())
     _online_cache[norm] = result
     return result
 
@@ -134,22 +134,16 @@ def _is_in_corpus(text: str, corpus: dict[str, set[int]]) -> bool:
     return normalize_gurmukhi(text) in corpus
 
 
-def _is_substring_of_corpus_line(text: str, corpus: dict[str, set[int]]) -> bool:
-    """Return True if text is a contiguous substring of any single corpus line."""
+def _substring_angs(text: str, corpus: dict[str, set[int]]) -> set[int] | None:
+    """Angs of corpus lines containing text as a contiguous substring (None = no match)."""
     norm = normalize_gurmukhi(text)
-    for line in corpus:
+    found: set[int] = set()
+    matched = False
+    for line, angs in corpus.items():
         if norm in line:
-            return True
-    return False
-
-
-def _correct_ang(tuk_text: str, cited_ang: int, corpus: dict[str, set[int]]) -> str | None:
-    """Return corrected ang string if cited_ang is wrong, else None (=correct)."""
-    norm = normalize_gurmukhi(tuk_text)
-    correct_angs = corpus.get(norm, set())
-    if not correct_angs or cited_ang in correct_angs:
-        return None  # either no info or ang is correct
-    return str(min(correct_angs))  # return lowest (first) correct ang
+            matched = True
+            found |= angs
+    return found if matched else None
 
 
 # ---------------------------------------------------------------------------
@@ -181,44 +175,68 @@ def verify_answer(
         corpus.setdefault(norm, set()).update(angs)
     failed_quotes: list[str] = []
 
-    def _lookup(text: str) -> tuple[set[int] | None, bool]:
-        """Return (exact_angs or None if not found, found_as_substring)."""
+    def _lookup(text: str) -> set[int] | None:
+        """Angs where text appears (verbatim or inside one line); None = not found."""
         norm = normalize_gurmukhi(text)
         if norm in corpus:
-            return corpus[norm], False
-        if _is_substring_of_corpus_line(text, corpus):
-            return None, True
+            return corpus[norm]
+        sub = _substring_angs(text, corpus)
+        if sub is not None:
+            return sub
         if use_online:
-            exact_angs, substring = _banidb_find(norm)
+            exact_angs, sub_angs = _banidb_find(norm)
             if exact_angs:
-                corpus[norm] = exact_angs  # reuse for ang validation below
-                return exact_angs, False
-            if substring:
-                return None, True
-        return None, False
+                corpus[norm] = exact_angs
+                return exact_angs
+            if sub_angs:
+                return sub_angs
+        return None
+
+    def _verify_quote(text: str) -> set[int] | None:
+        """Verify a quote that may span MULTIPLE corpus lines.
+
+        A <tuk> often contains adjacent lines of one shabad
+        ("ਲਾਈਨ੧ ॥ ਲਾਈਨ੨ ॥") — exact and substring checks both fail on the
+        joined text even though every line is genuine. Split on dandas and
+        verify each segment; the quote passes only if EVERY segment does.
+
+        Returns the union of matched angs, or None if unverified.
+        """
+        angs = _lookup(text)
+        if angs is not None:
+            return angs
+        segments = [
+            s.strip() for s in re.split(r"[॥।]+", text)
+            if s.strip() and not re.fullmatch(r"[੦-੯0-9\s]+|ਰਹਾਉ", s.strip())
+        ]
+        if len(segments) < 2:
+            return None
+        angs_union: set[int] = set()
+        for seg in segments:
+            seg_angs = _lookup(seg)
+            if seg_angs is None:
+                return None
+            angs_union |= seg_angs
+        return angs_union
 
     # ── Pass 1: process <tuk> tags ──────────────────────────────────────────
     def _replace_tuk(m: re.Match) -> str:
         ang_attr = m.group(1)   # may be None
         tuk_text = (m.group(2) or "").strip()
 
-        exact_angs, substring = _lookup(tuk_text)
-        if exact_angs is None:
-            if substring:
-                # Real partial quote — keep, but note missing tag
-                return tuk_text
+        angs = _verify_quote(tuk_text)
+        if angs is None:
             failed_quotes.append(tuk_text)
             return _FAILED_REPLACEMENT
 
         # Quote is real — validate ang if provided
-        if ang_attr:
-            correction = _correct_ang(tuk_text, int(ang_attr), corpus)
-            if correction:
-                logger.warning(
-                    "Wrong ang in tuk: cited %s, correct %s for '%s…'",
-                    ang_attr, correction, tuk_text[:30],
-                )
-                return _ANG_CORRECTED_TMPL.format(text=tuk_text, correct=correction)
+        if ang_attr and angs and int(ang_attr) not in angs:
+            correction = str(min(angs))
+            logger.warning(
+                "Wrong ang in tuk: cited %s, correct %s for '%s…'",
+                ang_attr, correction, tuk_text[:30],
+            )
+            return _ANG_CORRECTED_TMPL.format(text=tuk_text, correct=correction)
 
         return tuk_text
 
@@ -232,8 +250,7 @@ def verify_answer(
         words = [w for w in _GURMUKHI_WORD_RE.findall(run) if w]
         if len(words) < 4:
             return run  # short terms / single words — pass through
-        exact_angs, substring = _lookup(run)
-        if exact_angs is not None or substring:
+        if _verify_quote(run) is not None:
             return run  # genuine Gurbani
         failed_quotes.append(run)
         return _FAILED_REPLACEMENT

@@ -87,9 +87,23 @@ def corpus_stats(path: str = SHABADS_FILE) -> dict:
     }
 
 
+# Zero-width characters that render invisibly but break string equality
+_ZERO_WIDTH_RE = re.compile(r"[​‌‍⁠﻿]")
+
+
 def normalize_gurmukhi(text: str) -> str:
-    """Unicode NFC + collapse whitespace + strip."""
+    """Canonical form for Gurmukhi comparison.
+
+    - Unicode NFC (which, for Gurmukhi, leaves nukta letters in their
+      decomposed form on both input variants — ਸ਼ and ਸ+਼ normalize alike)
+    - strip zero-width joiners/non-joiners/spaces (invisible, non-semantic)
+    - fold out udaat (U+0A51) — a rare diacritic frequently omitted in
+      modern renderings; folding it prevents false strips of correct quotes
+    - collapse whitespace
+    """
     text = unicodedata.normalize("NFC", text)
+    text = _ZERO_WIDTH_RE.sub("", text)
+    text = text.replace("ੑ", "")
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
@@ -109,24 +123,21 @@ def make_windows(
     if len(lines) <= window_size:
         return [lines]
 
-    windows: list[list[ShabadLine]] = []
+    # Track index spans, not line values — repeated lines (e.g. a Rahao
+    # refrain appearing twice) must survive the tail merge, so dedup by
+    # position rather than by equality.
     step = window_size - overlap
+    spans: list[tuple[int, int]] = []
     i = 0
     while i < len(lines):
-        window = lines[i: i + window_size]
-        windows.append(window)
+        spans.append((i, min(i + window_size, len(lines))))
         i += step
 
     # Merge a short trailing window to avoid under-context fragments
+    # (may exceed window_size by a few lines, preserving all content)
     min_useful = max(overlap * 2, 4)
-    if len(windows) > 1 and len(windows[-1]) < min_useful:
-        # Absorb the tail into the previous window (may exceed window_size slightly,
-        # but only by a few lines and preserves all content)
-        prev = windows[-2]
-        tail = windows[-1]
-        # Only absorb lines not already in prev
-        extra = [l for l in tail if l not in prev]
-        windows[-2] = prev + extra
-        windows.pop()
+    if len(spans) > 1 and spans[-1][1] - spans[-1][0] < min_useful:
+        spans[-2] = (spans[-2][0], spans[-1][1])
+        spans.pop()
 
-    return windows
+    return [lines[a:b] for a, b in spans]

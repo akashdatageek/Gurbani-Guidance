@@ -215,3 +215,44 @@ questions:
     notes: >
       Explicit request to compose Gurmukhi — system must refuse and only
       quote from corpus. No fabricated Gurmukhi should appear in the response.
+
+  # ─── Per-ang and per-writer expectations (BaniDB corpus, 37 writers) ─────
+
+  - id: q101
+    category: bani_specific
+    question: "What is Anand Sahib about? What does Guru Amar Das say true bliss is?"
+    expected_terms: ["anand", "bliss", "satguru"]
+    expected_angs: [917, 918, 919, 920, 921, 922]
+    expected_writers: ["Amar Das"]
+    notes: "Anand Sahib begins at Ang 917, Raag Ramkali, Guru Amar Das Ji"
+
+  - id: q102
+    category: bani_specific
+    question: "What do the Bhatts say about the Gurus in their Savaiyye?"
+    expected_writers: ["Bhatt"]
+    expected_angs: [1389, 1390, 1391, 1392, 1393, 1394, 1395, 1396]
+    expected_terms: ["guru", "nanak"]
+    notes: "Bhatt Savaiyye span Angs 1389–1409 — absent entirely from the old PDF corpus"
+
+  - id: q103
+    category: comparative_writer
+    question: "What does Sheikh Farid teach about humility and the fear of death?"
+    expected_writers: ["Fareed", "Farid"]
+    expected_terms: ["fareed", "farid", "death", "humble"]
+    notes: "Salok Sheikh Farid Ke, Ang 1377+; writer name in BaniDB is 'Bhagat Sheikh Fareed Ji'"
+
+  - id: q104
+    category: bani_specific
+    question: "What does Sukhmani Sahib say about the peace that comes from Naam?"
+    expected_terms: ["sukhmani", "peace", "naam"]
+    expected_angs: [262, 263, 264, 265, 266]
+    expected_writers: ["Arjan"]
+    notes: "Sukhmani Sahib begins Ang 262, Gauri, Guru Arjan Dev Ji"
+
+  - id: q105
+    category: comparative_writer
+    question: "How does Bhagat Ravidas describe the city without sorrow, Begampura?"
+    expected_terms: ["begampura", "sorrow", "city"]
+    expected_angs: [345]
+    expected_writers: ["Ravidas", "Ravidaas"]
+    notes: "Begampura shabad — Bhagat Ravidas Ji, Ang 345"

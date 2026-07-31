@@ -110,3 +110,61 @@ def test_correct_ang_no_correction():
         cleaned, failed = verify_answer(answer)
         assert "citation corrected" not in cleaned
         assert failed == []
+
+
+# ---------------------------------------------------------------------------
+# Multi-line (couplet) quotes and normalization robustness
+# ---------------------------------------------------------------------------
+
+COUPLET_CORPUS = {
+    "ਪਹਿਲੀ ਤੁਕ ॥": {10},
+    "ਦੂਜੀ ਤੁਕ ॥੧॥": {10},
+    "ਸਤਿ ਨਾਮੁ ਕਰਤਾ ਪੁਰਖੁ": {1},
+}
+
+
+def test_couplet_in_one_tuk_survives():
+    """Two adjacent real lines quoted in a single <tuk> must not be stripped."""
+    with patch("src.verify._get_corpus_lines", return_value=COUPLET_CORPUS):
+        from src.verify import verify_answer
+        answer = '<tuk ang="10">ਪਹਿਲੀ ਤੁਕ ॥ ਦੂਜੀ ਤੁਕ ॥੧॥</tuk>'
+        cleaned, failed = verify_answer(answer)
+        assert failed == []
+        assert "ਪਹਿਲੀ ਤੁਕ" in cleaned and "ਦੂਜੀ ਤੁਕ" in cleaned
+        assert "quote removed" not in cleaned
+
+
+def test_couplet_with_one_fabricated_line_stripped():
+    with patch("src.verify._get_corpus_lines", return_value=COUPLET_CORPUS):
+        from src.verify import verify_answer
+        answer = '<tuk ang="10">ਪਹਿਲੀ ਤੁਕ ॥ ਫਰਜੀ ਬਣਾਈ ਤੁਕ ॥</tuk>'
+        cleaned, failed = verify_answer(answer)
+        assert len(failed) == 1
+        assert "quote removed" in cleaned
+
+
+def test_couplet_ang_correction_uses_union():
+    with patch("src.verify._get_corpus_lines", return_value=COUPLET_CORPUS):
+        from src.verify import verify_answer
+        answer = '<tuk ang="99">ਪਹਿਲੀ ਤੁਕ ॥ ਦੂਜੀ ਤੁਕ ॥੧॥</tuk>'
+        cleaned, failed = verify_answer(answer)
+        assert failed == []
+        assert "citation corrected: Ang 10" in cleaned
+
+
+def test_zero_width_chars_do_not_break_verification():
+    with patch("src.verify._get_corpus_lines", return_value={"ਸਤਿ ਨਾਮੁ ਕਰਤਾ ਪੁਰਖੁ": {1}}):
+        from src.verify import verify_answer
+        answer = '<tuk ang="1">ਸਤਿ‍ ਨਾਮੁ‌ ਕਰਤਾ ਪੁਰਖੁ</tuk>'
+        cleaned, failed = verify_answer(answer)
+        assert failed == []
+
+
+def test_udaat_folded_for_comparison():
+    from src.corpus import normalize_gurmukhi
+    assert normalize_gurmukhi("ਸਾਮੑੈ") == normalize_gurmukhi("ਸਾਮੈ")
+
+
+def test_nukta_variants_normalize_alike():
+    from src.corpus import normalize_gurmukhi
+    assert normalize_gurmukhi("ਸ਼ਬਦ") == normalize_gurmukhi("ਸ਼ਬਦ")  # U+0A36 vs ਸ+U+0A3C

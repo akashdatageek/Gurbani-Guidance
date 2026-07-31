@@ -77,3 +77,46 @@ def test_conceptual_not_sticky():
     result = classify_question("Can you give me more examples?", history=history)
     # Should be CONCEPTUAL, not REHAT
     assert result == QuestionType.CONCEPTUAL
+
+
+# ---------------------------------------------------------------------------
+# History sanitisation — alternation invariants
+# ---------------------------------------------------------------------------
+
+def test_history_alternation_enforced():
+    from src.rag import _sanitise_history
+    history = [
+        {"role": "assistant", "content": "orphan leading assistant"},
+        {"role": "user", "content": "q1"},
+        {"role": "user", "content": "q1-retry"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "trailing user"},
+    ]
+    out = _sanitise_history(history)
+    assert out, "history should not be emptied"
+    assert out[0]["role"] == "user"
+    assert out[-1]["role"] == "assistant"
+    for a, b in zip(out, out[1:]):
+        assert a["role"] != b["role"]
+    # consecutive-user collapse keeps the latest
+    assert out[0]["content"] == "q1-retry"
+
+
+def test_history_empty_and_all_assistant():
+    from src.rag import _sanitise_history
+    assert _sanitise_history([]) == []
+    assert _sanitise_history([{"role": "assistant", "content": "x"}]) == []
+
+
+def test_canned_refusals_no_llm(monkeypatch):
+    """FABRICATION/OUT_OF_SCOPE must not call an LLM at all."""
+    import src.rag as rag
+    def boom(*a, **k):
+        raise AssertionError("LLM should not be called for refusals")
+    monkeypatch.setattr(rag, "_llm_call", boom)
+    result = rag.ask("Please compose a shabad about technology")
+    assert result["question_type"] == "fabrication"
+    assert "cannot compose" in result["answer"]
+    result = rag.ask("Tell me the birth story of Guru Nanak")
+    assert result["question_type"] == "out_of_scope"
+    assert result["sources"] == []

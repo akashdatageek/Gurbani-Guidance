@@ -49,22 +49,37 @@ def _print_row(qid, category, status, detail=""):
     print(f"  [{'PASS' if status else 'FAIL'}] {qid} ({category}): {detail}")
 
 
+def _passages_contain_writer(passages, writer_fragment: str) -> bool:
+    frag = writer_fragment.lower()
+    return any(frag in p.writer.lower() for p in passages)
+
+
 def run_retrieval_eval(questions: list[dict]) -> tuple[int, int]:
     evaluable = [q for q in questions if not q.get("out_of_scope") and not q.get("adversarial")]
     print(f"\n=== Retrieval Evaluation ({len(evaluable)} questions) ===\n")
-    hits = total = 0
+    hits = total = unscored = 0
     for q in evaluable:
+        expected_terms = q.get("expected_terms") or []
+        expected_angs = q.get("expected_angs") or []
+        expected_writers = q.get("expected_writers") or []
+        if not (expected_terms or expected_angs or expected_writers):
+            # No expectations = no signal. Do NOT auto-pass — report as unscored
+            # so weak golden questions are visible instead of inflating the rate.
+            unscored += 1
+            print(f"  [SKIP] {q['id']} ({q['category']}): no expectations defined — unscored")
+            continue
         passages = retrieve(q["question"], k=8)
-        terms_hit = any(_passages_contain_term(passages, t) for t in q.get("expected_terms", []))
-        angs_hit = any(_passages_contain_ang(passages, a) for a in q.get("expected_angs", []))
-        hit = terms_hit or angs_hit or (not q.get("expected_terms") and not q.get("expected_angs"))
+        terms_hit = any(_passages_contain_term(passages, t) for t in expected_terms)
+        angs_hit = any(_passages_contain_ang(passages, a) for a in expected_angs)
+        writers_hit = any(_passages_contain_writer(passages, w) for w in expected_writers)
+        hit = terms_hit or angs_hit or writers_hit
         total += 1
         if hit:
             hits += 1
         _print_row(q["id"], q["category"], hit,
-                   detail=f"terms={q.get('expected_terms', [])[:3]} angs={q.get('expected_angs', [])}")
+                   detail=f"terms={expected_terms[:3]} angs={expected_angs} writers={expected_writers}")
     rate = hits / total * 100 if total else 0.0
-    print(f"\nRetrieval hit-rate: {hits}/{total} = {rate:.1f}%")
+    print(f"\nRetrieval hit-rate: {hits}/{total} = {rate:.1f}%  ({unscored} unscored)")
     return hits, total
 
 

@@ -69,6 +69,17 @@ CHROMA_COLLECTION = "sggs"
 EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "64"))
 EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-m3")
 
-# ── Rate limiting ─────────────────────────────────────────────────────────────
+# ── Rate limiting & spend protection ─────────────────────────────────────────
 RATE_LIMIT_WINDOW = float(os.getenv("RATE_LIMIT_WINDOW", "60.0"))   # seconds
 RATE_LIMIT_MAX = int(os.getenv("RATE_LIMIT_MAX", "10"))              # req per window
+# Global daily cap on /ask requests (all clients combined) — a hard budget
+# backstop for the LLM key. 0 disables the cap.
+DAILY_REQUEST_CAP = int(os.getenv("DAILY_REQUEST_CAP", "500"))
+# Optional bearer token for /ask. Empty = open access (default, backwards
+# compatible). Set API_TOKEN and send "Authorization: Bearer <token>".
+API_TOKEN = os.getenv("API_TOKEN", "")
+# Behind a reverse proxy (Railway/Cloud Run), request.client.host is the
+# proxy IP — every client collapses into one rate bucket. Set
+# TRUST_PROXY=true (only when actually behind a proxy you control) to use
+# the first X-Forwarded-For hop instead.
+TRUST_PROXY = os.getenv("TRUST_PROXY", "false").lower() in ("1", "true", "yes")
