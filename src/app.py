@@ -1,7 +1,8 @@
 """FastAPI server for Gurbani RAG.
 
 Endpoints:
-    POST /ask     — main RAG endpoint
+    POST /ask         — main RAG endpoint (JSON)
+    POST /ask/stream  — Server-Sent Events stream (verified-safe deltas)
     GET  /health  — liveness check
     GET  /stats   — corpus statistics
 
@@ -20,6 +21,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.config import (
@@ -273,4 +275,79 @@ async def ask_endpoint(request: Request, body: AskRequest) -> AskResponse:
         failed_quotes=result["failed_quotes"],
         sources=result["sources"],
         question_type=result.get("question_type", "conceptual"),
+    )
+
+
+@app.post("/ask/stream")
+async def ask_stream_endpoint(request: Request, body: AskRequest) -> StreamingResponse:
+    """Server-Sent Events stream of the answer.
+
+    Emits `data: {json}\n\n` events:
+        {"type":"status","stage":...} | {"type":"delta","text":...} |
+        {"type":"done","sources":...,"failed_quotes":...,"question_type":...} |
+        {"type":"error","detail":...}
+
+    Deltas are verified-safe: <tuk> elements and Gurmukhi runs are held back
+    by StreamingVerifier until verified, so no unverified Gurbani is ever on
+    the wire — the guarantee is identical to the non-streaming /ask.
+    """
+    import json as _json
+
+    _check_auth(request)
+    client_ip = _client_ip(request)
+    if not _check_rate_limit(client_ip):
+        raise HTTPException(429, detail="Rate limit exceeded. Please wait before retrying.")
+    _check_daily_cap()
+
+    if not _index_ready:
+        raise HTTPException(
+            503,
+            detail=(
+                "Search index not ready. Run the one-time BaniDB sync: "
+                "`python -m src.ingest && python -m src.audit && python -m src.embed`."
+            ),
+        )
+
+    from src.rag import ask_stream
+
+    kwargs: dict[str, Any] = {"deep": body.deep}
+    if body.history:
+        kwargs["history"] = [m.model_dump() for m in body.history]
+    if body.filters:
+        if body.filters.writer:
+            kwargs["writer"] = body.filters.writer
+        if body.filters.raag:
+            kwargs["raag"] = body.filters.raag
+        if body.filters.ang_start is not None and body.filters.ang_end is not None:
+            kwargs["ang_range"] = (body.filters.ang_start, body.filters.ang_end)
+
+    q_hash = hashlib.sha256(body.question.encode()).hexdigest()[:12]
+    t0 = time.monotonic()
+
+    def event_source():
+        try:
+            for event in ask_stream(body.question, **kwargs):
+                yield f"data: {_json.dumps(event, ensure_ascii=False)}\n\n"
+                if event.get("type") == "done":
+                    logger.info(
+                        "ask_stream q_hash=%s type=%s sources=%d failed_quotes=%d latency_ms=%d deep=%s",
+                        q_hash,
+                        event.get("question_type"),
+                        len(event.get("sources", [])),
+                        len(event.get("failed_quotes", [])),
+                        int((time.monotonic() - t0) * 1000),
+                        body.deep,
+                    )
+        except Exception:  # noqa: BLE001 — surface as an SSE error event
+            logger.exception("Error in /ask/stream (q_hash=%s)", q_hash)
+            yield (
+                "data: "
+                + _json.dumps({"type": "error", "detail": "An internal error occurred. Please try again."})
+                + "\n\n"
+            )
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

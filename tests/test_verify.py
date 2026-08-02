@@ -168,3 +168,23 @@ def test_udaat_folded_for_comparison():
 def test_nukta_variants_normalize_alike():
     from src.corpus import normalize_gurmukhi
     assert normalize_gurmukhi("ਸ਼ਬਦ") == normalize_gurmukhi("ਸ਼ਬਦ")  # U+0A36 vs ਸ+U+0A3C
+
+
+def test_untagged_fabricated_run_with_dandas_stripped():
+    """Regression: dandas are U+0964/0965 (Devanagari block) — the run regex
+    must include them or Pass 2 never fires on untagged quotes."""
+    with patch("src.verify._get_corpus_lines", return_value=SYNTHETIC_CORPUS):
+        from src.verify import verify_answer
+        answer = "As Gurbani says: ਇਹ ਨਕਲੀ ਗੁਰਬਾਣੀ ਤੁਕ ਹੈ ॥ — a teaching."
+        cleaned, failed = verify_answer(answer)
+        assert "ਨਕਲੀ" not in cleaned
+        assert len(failed) == 1
+
+
+def test_untagged_real_run_with_dandas_survives():
+    with patch("src.verify._get_corpus_lines", return_value={"ਸਭਨਾ ਜੀਆ ਕਾ ਇਕੁ ਦਾਤਾ ॥": {2}}):
+        from src.verify import verify_answer
+        answer = "ਸਭਨਾ ਜੀਆ ਕਾ ਇਕੁ ਦਾਤਾ ॥ means One Giver of all."
+        cleaned, failed = verify_answer(answer)
+        assert "ਸਭਨਾ ਜੀਆ ਕਾ ਇਕੁ ਦਾਤਾ ॥" in cleaned
+        assert failed == []

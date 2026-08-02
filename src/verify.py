@@ -40,9 +40,12 @@ _TUK_RE = re.compile(
     re.DOTALL,
 )
 
-# Gurmukhi Unicode block U+0A00–U+0A7F
+# Gurmukhi Unicode block U+0A00–U+0A7F. NOTE: the dandas ।/॥ are U+0964/0965
+# in the DEVANAGARI block (shared by Indic scripts) — a run regex limited to
+# the Gurmukhi block silently cuts quotes off before their dandas, which
+# would let fabricated danda-marked runs bypass Pass 2 entirely.
 _GURMUKHI_WORD_RE = re.compile(r"[਀-੿]+")
-_GURMUKHI_RUN_RE = re.compile(r"[਀-੿][਀-੿\s]*[਀-੿]")
+_GURMUKHI_RUN_RE = re.compile(r"[਀-੿][਀-੿\s।॥]*[਀-੿।॥]")
 
 _FAILED_REPLACEMENT = "[quote removed — could not be verified against Sri Guru Granth Sahib Ji]"
 _ANG_CORRECTED_TMPL = "{text} [citation corrected: Ang {correct}]"
@@ -258,3 +261,105 @@ def verify_answer(
     cleaned = _GURMUKHI_RUN_RE.sub(_check_untagged, cleaned)
 
     return cleaned, failed_quotes
+
+
+# ---------------------------------------------------------------------------
+# Streaming verification
+# ---------------------------------------------------------------------------
+
+# First character that could begin a protected region: a tag or Gurmukhi text
+_HOLD_START_RE = re.compile(r"<|[਀-੿]")
+# Run continuation: Gurmukhi block + whitespace + the shared-Indic dandas
+_GURMUKHI_OR_SPACE_RE = re.compile(r"[਀-੿\s।॥]")
+# Never buffer more than this without resolving — safety valve against a
+# malformed/unclosed tag consuming the whole answer
+_MAX_HOLD = 4000
+
+
+class StreamingVerifier:
+    """Incremental wrapper around verify_answer() for streamed answers.
+
+    Plain prose is emitted as soon as it arrives. Anything that could be a
+    scripture quote — a <tuk> element or a run of Gurmukhi text — is held
+    back until it is complete, verified through exactly the same rules as
+    the non-streaming path (trusted passage lines → local corpus → BaniDB
+    fallback), and only then released. Unverifiable quotes stream out
+    already replaced, so no unverified Gurbani is ever visible, not even
+    transiently.
+
+    Usage:
+        sv = StreamingVerifier(trusted_lines=...)
+        for chunk in llm_stream:
+            emit(sv.feed(chunk))
+        emit(sv.close())
+        sv.failed_quotes  # accumulated stripped quotes
+    """
+
+    def __init__(self, trusted_lines: dict[str, set[int]] | None = None):
+        self._trusted = trusted_lines
+        self._buf = ""
+        self.failed_quotes: list[str] = []
+
+    def _verify_fragment(self, fragment: str) -> str:
+        cleaned, failed = verify_answer(fragment, trusted_lines=self._trusted)
+        self.failed_quotes.extend(failed)
+        return cleaned
+
+    def feed(self, chunk: str) -> str:
+        self._buf += chunk
+        return self._drain(final=False)
+
+    def close(self) -> str:
+        return self._drain(final=True)
+
+    def _drain(self, final: bool) -> str:
+        out: list[str] = []
+        while self._buf:
+            m = _HOLD_START_RE.search(self._buf)
+            if m is None:
+                out.append(self._buf)
+                self._buf = ""
+                break
+            if m.start() > 0:
+                out.append(self._buf[: m.start()])
+                self._buf = self._buf[m.start():]
+                continue
+
+            emitted, progressed = (
+                self._consume_tag(final) if self._buf[0] == "<"
+                else self._consume_gurmukhi(final)
+            )
+            out.append(emitted)
+            if not progressed:
+                break  # need more stream data
+        return "".join(out)
+
+    def _consume_tag(self, final: bool) -> tuple[str, bool]:
+        """Buffer starts with '<'. Returns (text_to_emit, made_progress)."""
+        prefix = self._buf[:4]
+        if prefix != "<tuk"[: len(prefix)]:
+            # Not a tuk tag — release the '<' as plain text
+            self._buf = self._buf[1:]
+            return "<", True
+
+        close_idx = self._buf.find("</tuk>")
+        if close_idx == -1:
+            if final or len(self._buf) > _MAX_HOLD:
+                # Unclosed tag at end of stream: verify whatever we have
+                fragment, self._buf = self._buf, ""
+                return self._verify_fragment(fragment), True
+            return "", False
+
+        end = close_idx + len("</tuk>")
+        element, self._buf = self._buf[:end], self._buf[end:]
+        return self._verify_fragment(element), True
+
+    def _consume_gurmukhi(self, final: bool) -> tuple[str, bool]:
+        """Buffer starts with a Gurmukhi char. Returns (text_to_emit, made_progress)."""
+        i = 0
+        while i < len(self._buf) and _GURMUKHI_OR_SPACE_RE.match(self._buf[i]):
+            i += 1
+        if i == len(self._buf) and not final and len(self._buf) <= _MAX_HOLD:
+            return "", False  # run may continue in the next chunk
+        run, self._buf = self._buf[:i], self._buf[i:]
+        return self._verify_fragment(run), True

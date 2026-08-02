@@ -72,40 +72,99 @@ export default function Home() {
       setMessages((prev) => [...prev, userMsg, assistantPlaceholder]);
       setIsLoading(true);
 
-      try {
-        const history = buildHistory([...messages, userMsg]);
+      const updatePlaceholder = (patch: Partial<Message>) => {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantPlaceholder.id ? { ...m, ...patch } : m
+          )
+        );
+      };
 
+      const requestBody = (history: { role: string; content: string }[]) =>
+        JSON.stringify({
+          question: question.trim(),
+          history: history.slice(0, -1), // exclude the just-sent message
+          deep: isDeep,
+        });
+
+      // Non-streaming fallback (older backends / stream failure before output)
+      const askNonStreaming = async (history: { role: string; content: string }[]) => {
         const res = await fetch(`${API_BASE}/ask`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            question: question.trim(),
-            history: history.slice(0, -1), // exclude the just-sent message
-            deep: isDeep,
-          }),
+          body: requestBody(history),
         });
-
         if (!res.ok) {
           const errData = await res.json().catch(() => ({ detail: res.statusText }));
           throw new Error(errData.detail ?? `HTTP ${res.status}`);
         }
-
         const data = await res.json();
+        updatePlaceholder({
+          content: data.answer,
+          sources: data.sources ?? [],
+          failedQuotes: data.failed_quotes ?? [],
+          questionType: data.question_type ?? "conceptual",
+          loading: false,
+        });
+      };
 
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantPlaceholder.id
-              ? {
-                  ...m,
-                  content: data.answer,
-                  sources: data.sources ?? [],
-                  failedQuotes: data.failed_quotes ?? [],
-                  questionType: data.question_type ?? "conceptual",
-                  loading: false,
-                }
-              : m
-          )
-        );
+      try {
+        const history = buildHistory([...messages, userMsg]);
+
+        const res = await fetch(`${API_BASE}/ask/stream`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: requestBody(history),
+        });
+
+        if (!res.ok || !res.body) {
+          if (res.status === 404 || res.status === 405) {
+            // Backend without streaming — fall back transparently
+            await askNonStreaming(history);
+            return;
+          }
+          const errData = await res.json().catch(() => ({ detail: res.statusText }));
+          throw new Error(errData.detail ?? `HTTP ${res.status}`);
+        }
+
+        // Consume the SSE stream: every `data: {...}` line is one event
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let content = "";
+
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          let sep;
+          while ((sep = buffer.indexOf("\n\n")) !== -1) {
+            const rawEvent = buffer.slice(0, sep);
+            buffer = buffer.slice(sep + 2);
+            const dataLine = rawEvent
+              .split("\n")
+              .find((l) => l.startsWith("data: "));
+            if (!dataLine) continue;
+
+            const event = JSON.parse(dataLine.slice(6));
+            if (event.type === "delta") {
+              content += event.text;
+              updatePlaceholder({ content, loading: false });
+            } else if (event.type === "done") {
+              updatePlaceholder({
+                content,
+                sources: event.sources ?? [],
+                failedQuotes: event.failed_quotes ?? [],
+                questionType: event.question_type ?? "conceptual",
+                loading: false,
+              });
+            } else if (event.type === "error") {
+              throw new Error(event.detail ?? "Stream error");
+            }
+            // "status" events keep the loading indicator as-is
+          }
+        }
       } catch (err: unknown) {
         const message =
           err instanceof Error

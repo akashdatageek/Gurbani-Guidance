@@ -92,7 +92,8 @@ so refusals stay fast.
 | **Deep Study** | Optional mode — decomposes a question into 3–5 facets, retrieves per facet (up to 16 passages) for richer, multi-angle answers |
 | **Providers** | Anthropic Claude (default) or Google Gemini — switch with a single `PROVIDER` env var |
 | **History** | Rolling 10-turn conversation with REHAT stickiness |
-| **API** | FastAPI · rate-limited (10 req/min/IP) · CORS-configurable |
+| **API** | FastAPI · rate-limited (10 req/min/IP) · CORS-configurable · **streaming** (`POST /ask/stream`, SSE) |
+| **Streaming safety** | Deltas stream token-by-token, but `<tuk>` elements and Gurmukhi runs are held by `StreamingVerifier` until verified — unverified Gurbani is never on the wire, even transiently |
 | **Frontend** | Next.js 14 · Noto Sans Gurmukhi · Markdown rendering · GitHub Pages auto-deploy |
 | **Container** | Docker + docker-compose |
 
