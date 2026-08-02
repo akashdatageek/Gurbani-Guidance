@@ -2,22 +2,36 @@
 
 Three layers of protection:
   1. <tuk> tags: every tagged quote verified; ang attribute validated.
-  2. Untagged Gurmukhi: runs of ≥4 Gurmukhi words verified; short terms pass through.
-  3. Substring fallback: partial real quotes (e.g. half a line) pass; only fully
+  2. Untagged Gurmukhi: danda-marked runs of ≥4 words are always verified;
+     danda-free runs of ≥6 words are verified when preceded by an
+     attribution phrase ("Guru Ji says…", "Gurbani states…"). Short terms
+     and unattributed Punjabi prose pass through (documented scope limit).
+  3. Substring fallback: partial real quotes (e.g. half a line) pass; only
      fabricated text is stripped.
 
+Verification is SHABAD-SCOPED: the corpus is keyed by
+(shabad_id, line_idx, ang), and a quote spanning multiple lines only
+verifies when all its segments belong to ONE shabad and are adjacent in
+scripture order — two genuine lines stitched together from different
+banis are rejected, closing the "stitched quote" attack.
+
+Ang corrections are only issued for exact, unambiguous matches; substring
+fragments and lines appearing at multiple locations never earn an
+authoritative "[citation corrected]" note.
+
 Verification sources, in order:
-  a. The local corpus (data/shabads.jsonl), when built (RETRIEVAL_MODE=local).
-  b. `trusted_lines` — the exact lines of the passages retrieved for this very
-     answer (in live BaniDB mode these came verbatim from the API moments ago,
-     so most quotes verify without any extra network call).
-  c. The BaniDB search API (full-word Gurmukhi search), cached per process —
-     the online fallback for quotes not covered by (a)/(b). If BaniDB cannot
-     confirm a quote (including on network failure), the quote is STRIPPED:
-     fail-closed, because unverified Gurbani must never reach the user.
+  a. The local corpus (data/shabads.jsonl), when built.
+  b. `trusted_lines` — the exact lines of the passages retrieved for this
+     answer (live mode), with the same location structure.
+  c. The BaniDB search API (cached, fail-closed) when no local corpus exists.
 
 Public API:
     verify_answer(answer, trusted_lines=None) -> tuple[str, list[str]]
+    StreamingVerifier — incremental wrapper with identical guarantees.
+
+Location values are (shabad_id, line_idx, ang) tuples; line_idx only needs
+to be monotone within a shabad (global verseIds and window-relative indices
+both qualify).
 """
 
 from __future__ import annotations
@@ -34,6 +48,9 @@ from src.corpus import ensure_corpus, normalize_gurmukhi
 
 logger = logging.getLogger(__name__)
 
+# (shabad_id, line_idx, ang)
+Loc = tuple[int, int, int]
+
 # Matches <tuk ang="42">…</tuk>, <tuk ang='42'>…</tuk>, <tuk ang=42>…</tuk>, <tuk>…</tuk>
 _TUK_RE = re.compile(
     r'<tuk(?:\s+ang=["\']?(\d+)["\']?)?\s*>(.*?)</tuk>',
@@ -42,10 +59,23 @@ _TUK_RE = re.compile(
 
 # Gurmukhi Unicode block U+0A00–U+0A7F. NOTE: the dandas ।/॥ are U+0964/0965
 # in the DEVANAGARI block (shared by Indic scripts) — a run regex limited to
-# the Gurmukhi block silently cuts quotes off before their dandas, which
-# would let fabricated danda-marked runs bypass Pass 2 entirely.
+# the Gurmukhi block silently cuts quotes off before their dandas.
 _GURMUKHI_WORD_RE = re.compile(r"[਀-੿]+")
 _GURMUKHI_RUN_RE = re.compile(r"[਀-੿][਀-੿\s।॥]*[਀-੿।॥]")
+
+# Attribution phrases that mark the following Gurmukhi as a claimed quote —
+# used to extend verification to danda-free runs (English + Punjabi cues).
+_ATTRIBUTION_RE = re.compile(
+    r"(?:\b(?:say|says|said|state|states|stated|write|writes|wrote|read|reads|"
+    r"declare|declares|proclaim|proclaims|teach|teaches|taught|quote|quotes|quoted|"
+    r"gurbani|bani|tuk|shabad|verse|line|scripture)\b|ਕਹਿੰਦੇ|ਆਖਦੇ|ਫੁਰਮਾ|ਫ਼ੁਰਮਾ|ਲਿਖ)"
+    r"[^਀-੿]{0,20}$",
+    re.IGNORECASE,
+)
+
+# Max line-index gap between consecutive segments of a multi-line quote —
+# allows skipping one intervening line (e.g. a Rahao) but nothing more.
+_MAX_ADJACENCY_GAP = 2
 
 _FAILED_REPLACEMENT = "[quote removed — could not be verified against Sri Guru Granth Sahib Ji]"
 _ANG_CORRECTED_TMPL = "{text} [citation corrected: Ang {correct}]"
@@ -54,8 +84,8 @@ _ANG_CORRECTED_TMPL = "{text} [citation corrected: Ang {correct}]"
 _corpus_mtime: float = 0.0
 
 
-def _get_corpus_lines() -> dict[str, set[int]]:
-    """Load corpus as {normalized_gurmukhi: {ang, …}}.  Auto-invalidates on file change."""
+def _get_corpus_lines() -> dict[str, tuple[Loc, ...]]:
+    """Load corpus as {normalized_gurmukhi: (Loc, …)}. Auto-invalidates on file change."""
     global _corpus_mtime
     ensure_corpus(SHABADS_FILE)
     if not os.path.exists(SHABADS_FILE):
@@ -69,8 +99,8 @@ def _get_corpus_lines() -> dict[str, set[int]]:
 
 
 @lru_cache(maxsize=1)
-def _build_corpus() -> dict[str, set[int]]:
-    corpus: dict[str, set[int]] = {}
+def _build_corpus() -> dict[str, tuple[Loc, ...]]:
+    corpus: dict[str, list[Loc]] = {}
     with open(SHABADS_FILE, "r", encoding="utf-8") as f:
         for raw in f:
             raw = raw.strip()
@@ -80,14 +110,16 @@ def _build_corpus() -> dict[str, set[int]]:
                 shabad = json.loads(raw)
             except json.JSONDecodeError:
                 continue
+            sid = shabad.get("shabad_id", 0)
             shabad_ang = shabad.get("ang", 0)
-            for line_obj in shabad.get("lines", []):
+            for idx, line_obj in enumerate(shabad.get("lines", [])):
                 g = normalize_gurmukhi(line_obj.get("gurmukhi", ""))
-                line_ang = line_obj.get("ang") or shabad_ang
                 if g:
-                    corpus.setdefault(g, set()).add(line_ang)
+                    line_ang = line_obj.get("ang") or shabad_ang
+                    corpus.setdefault(g, []).append((sid, idx, line_ang))
     logger.info("Loaded %d Gurmukhi lines into verify corpus.", len(corpus))
-    return corpus
+    return {k: tuple(v) for k, v in corpus.items()}
+
 
 # Alias for test patching compatibility
 _corpus_cache = _build_corpus
@@ -97,56 +129,80 @@ _corpus_cache = _build_corpus
 # Online (BaniDB) verification fallback — cached per process
 # ---------------------------------------------------------------------------
 
-# normalized text -> (exact_angs, substring_angs)
-_online_cache: dict[str, tuple[set[int], set[int]]] = {}
+# normalized text -> (exact_locs, substring_locs)
+_online_cache: dict[str, tuple[tuple[Loc, ...], tuple[Loc, ...]]] = {}
 
 
-def _banidb_find(norm: str) -> tuple[set[int], set[int]]:
+def _banidb_find(norm: str) -> tuple[tuple[Loc, ...], tuple[Loc, ...]]:
     """Look a normalized Gurmukhi line up via the BaniDB search API.
 
-    Returns (angs where it appears verbatim, angs of verses containing it as
-    a substring). Returns (set(), set()) when unreachable — fail-closed.
+    Uses (shabadId, verseId, pageNo) as the Loc — verseIds are globally
+    sequential, so adjacency within a shabad still holds. Returns empty
+    tuples when unreachable: fail-closed.
     """
     if norm in _online_cache:
         return _online_cache[norm]
     try:
         from src import banidb
-        # Strip end-of-tuk punctuation/numerals for full-word search
         query = re.sub(r"[॥।]+|[੦-੯]+", " ", norm)
         query = re.sub(r"\s+", " ", query).strip()
         if not query:
-            return set(), set()
+            return (), ()
         resp = banidb.search(query, searchtype=banidb.SEARCH_FULL_WORD_GURMUKHI, results=20)
-        exact_angs: set[int] = set()
-        sub_angs: set[int] = set()
+        exact: list[Loc] = []
+        sub: list[Loc] = []
         for v in banidb.extract_verses(resp):
             vg = normalize_gurmukhi(banidb.verse_gurmukhi(v))
+            loc = (banidb.verse_shabad_id(v) or 0, banidb.verse_id(v), banidb.verse_ang(v))
             if vg == norm:
-                exact_angs.add(banidb.verse_ang(v))
+                exact.append(loc)
             elif norm in vg:
-                sub_angs.add(banidb.verse_ang(v))
-        result = (exact_angs, sub_angs)
+                sub.append(loc)
+        result = (tuple(exact), tuple(sub))
     except Exception as exc:  # noqa: BLE001 — any failure means "unverified"
         logger.warning("BaniDB verification lookup failed (%s) — quote will be stripped.", exc)
-        result = (set(), set())
+        result = ((), ())
     _online_cache[norm] = result
     return result
 
 
-def _is_in_corpus(text: str, corpus: dict[str, set[int]]) -> bool:
-    return normalize_gurmukhi(text) in corpus
-
-
-def _substring_angs(text: str, corpus: dict[str, set[int]]) -> set[int] | None:
-    """Angs of corpus lines containing text as a contiguous substring (None = no match)."""
+def _substring_locs(text: str, corpus: dict[str, tuple[Loc, ...]]) -> tuple[Loc, ...] | None:
+    """Locs of corpus lines containing text as a contiguous substring (None = no match)."""
     norm = normalize_gurmukhi(text)
-    found: set[int] = set()
+    found: list[Loc] = []
     matched = False
-    for line, angs in corpus.items():
+    for line, locs in corpus.items():
         if norm in line:
             matched = True
-            found |= angs
-    return found if matched else None
+            found.extend(locs)
+    return tuple(found) if matched else None
+
+
+def _adjacent_chain(options: list[list[int]], max_gap: int = _MAX_ADJACENCY_GAP) -> bool:
+    """True if one strictly-increasing index per segment exists with bounded gaps."""
+    def dfs(seg: int, prev: int) -> bool:
+        if seg == len(options):
+            return True
+        return any(
+            dfs(seg + 1, idx)
+            for idx in options[seg]
+            if prev < idx <= prev + max_gap
+        )
+    return any(dfs(1, start) for start in options[0])
+
+
+def _run_needs_verification(run: str, preceding: str) -> bool:
+    """Decide whether an untagged Gurmukhi run must be verified.
+
+    Danda-marked runs of ≥4 words are always claimed scripture. Danda-free
+    runs are treated as quotes only when ≥6 words AND introduced by an
+    attribution phrase — otherwise they are Punjabi prose, which this
+    guarantee deliberately does not cover (see README scope note).
+    """
+    words = _GURMUKHI_WORD_RE.findall(run)
+    if "॥" in run or "।" in run:
+        return len(words) >= 4
+    return len(words) >= 6 and bool(_ATTRIBUTION_RE.search(preceding[-80:]))
 
 
 # ---------------------------------------------------------------------------
@@ -155,104 +211,133 @@ def _substring_angs(text: str, corpus: dict[str, set[int]]) -> set[int] | None:
 
 def verify_answer(
     answer: str,
-    trusted_lines: dict[str, set[int]] | None = None,
+    trusted_lines: dict[str, tuple[Loc, ...] | set | list] | None = None,
 ) -> tuple[str, list[str]]:
     """Verify all Gurmukhi citations in an answer.
 
-    `trusted_lines` maps normalized Gurmukhi -> angs for the passages that
-    were retrieved for this answer (verbatim API text in live mode).
+    `trusted_lines` maps normalized Gurmukhi -> Loc tuples for the passages
+    retrieved for this answer.
 
     Returns (cleaned_answer, failed_quotes).
     """
     if not answer:
         return answer, []
 
-    # Merge the local corpus (may be empty in live mode) with this answer's
-    # retrieved passage lines; downstream checks treat them identically.
     local_corpus = _get_corpus_lines()
-    # Online fallback only when no local corpus exists (pure live-API mode);
-    # with a built corpus, verification stays fully offline/deterministic.
+    # Online fallback only when no local corpus exists (pure live-API mode)
     use_online = len(local_corpus) == 0
-    corpus = dict(local_corpus)
-    for norm, angs in (trusted_lines or {}).items():
-        corpus.setdefault(norm, set()).update(angs)
+    corpus: dict[str, tuple[Loc, ...]] = dict(local_corpus)
+    for norm, locs in (trusted_lines or {}).items():
+        locs = tuple(tuple(l) for l in locs)  # tolerate lists
+        corpus[norm] = tuple(set(corpus.get(norm, ())) | set(locs))
     failed_quotes: list[str] = []
 
-    def _lookup(text: str) -> set[int] | None:
-        """Angs where text appears (verbatim or inside one line); None = not found."""
+    def _lookup(text: str) -> tuple[tuple[Loc, ...], bool] | None:
+        """Return (locs, exact) or None if not found anywhere."""
         norm = normalize_gurmukhi(text)
         if norm in corpus:
-            return corpus[norm]
-        sub = _substring_angs(text, corpus)
+            return corpus[norm], True
+        sub = _substring_locs(text, corpus)
         if sub is not None:
-            return sub
+            return sub, False
         if use_online:
-            exact_angs, sub_angs = _banidb_find(norm)
-            if exact_angs:
-                corpus[norm] = exact_angs
-                return exact_angs
-            if sub_angs:
-                return sub_angs
+            exact_locs, sub_locs = _banidb_find(norm)
+            if exact_locs:
+                return exact_locs, True
+            if sub_locs:
+                return sub_locs, False
         return None
 
-    def _verify_quote(text: str) -> set[int] | None:
-        """Verify a quote that may span MULTIPLE corpus lines.
+    def _verify_quote(text: str) -> tuple[tuple[Loc, ...], bool] | None:
+        """Verify a quote; multi-line quotes must be one shabad, adjacent lines.
 
-        A <tuk> often contains adjacent lines of one shabad
-        ("ਲਾਈਨ੧ ॥ ਲਾਈਨ੨ ॥") — exact and substring checks both fail on the
-        joined text even though every line is genuine. Split on dandas and
-        verify each segment; the quote passes only if EVERY segment does.
-
-        Returns the union of matched angs, or None if unverified.
+        Returns (locs, exact) or None. `exact` is False for substring/partial
+        matches — those never earn ang corrections.
         """
-        angs = _lookup(text)
-        if angs is not None:
-            return angs
+        found = _lookup(text)
+        if found is not None:
+            return found
+
         segments = [
             s.strip() for s in re.split(r"[॥।]+", text)
             if s.strip() and not re.fullmatch(r"[੦-੯0-9\s]+|ਰਹਾਉ", s.strip())
         ]
         if len(segments) < 2:
             return None
-        angs_union: set[int] = set()
+        seg_results = []
         for seg in segments:
-            seg_angs = _lookup(seg)
-            if seg_angs is None:
+            seg_found = _lookup(seg)
+            if seg_found is None:
                 return None
-            angs_union |= seg_angs
-        return angs_union
+            seg_results.append(seg_found)
+
+        # All segments must share ONE shabad…
+        common_sids = set.intersection(
+            *({sid for sid, _, _ in locs} for locs, _ in seg_results)
+        )
+        matching_sids = []
+        for sid in common_sids:
+            # …with their lines adjacent in scripture order.
+            options = [
+                sorted(idx for s, idx, _ in locs if s == sid)
+                for locs, _ in seg_results
+            ]
+            if _adjacent_chain(options):
+                matching_sids.append(sid)
+        if not matching_sids:
+            logger.warning(
+                "Rejected stitched/non-adjacent multi-line quote: %.60s…", text
+            )
+            return None
+
+        # A multi-line quote that resolved to exactly ONE shabad with adjacent
+        # lines is located precisely — that qualifies for ang correction even
+        # though the danda-split segments matched as substrings. Ambiguous
+        # (multi-shabad) resolutions never earn corrections.
+        ambiguous = len(matching_sids) > 1
+        sid = matching_sids[0]
+        locs = tuple(
+            loc for seg_locs, _ in seg_results for loc in seg_locs if loc[0] == sid
+        )
+        return locs, not ambiguous
 
     # ── Pass 1: process <tuk> tags ──────────────────────────────────────────
     def _replace_tuk(m: re.Match) -> str:
         ang_attr = m.group(1)   # may be None
         tuk_text = (m.group(2) or "").strip()
 
-        angs = _verify_quote(tuk_text)
-        if angs is None:
+        result = _verify_quote(tuk_text)
+        if result is None:
             failed_quotes.append(tuk_text)
             return _FAILED_REPLACEMENT
 
-        # Quote is real — validate ang if provided
+        locs, exact = result
+        angs = {ang for _, _, ang in locs}
         if ang_attr and angs and int(ang_attr) not in angs:
-            correction = str(min(angs))
+            # Correct ONLY when the match is exact and the location unique —
+            # substring fragments and multi-location lines must not receive
+            # an authoritative correction.
+            if exact and len(angs) == 1:
+                correction = str(next(iter(angs)))
+                logger.warning(
+                    "Wrong ang in tuk: cited %s, correct %s for '%s…'",
+                    ang_attr, correction, tuk_text[:30],
+                )
+                return _ANG_CORRECTED_TMPL.format(text=tuk_text, correct=correction)
             logger.warning(
-                "Wrong ang in tuk: cited %s, correct %s for '%s…'",
-                ang_attr, correction, tuk_text[:30],
+                "Cited Ang %s not among matches %s for '%s…' — leaving uncorrected "
+                "(partial or multi-location match).",
+                ang_attr, sorted(angs)[:5], tuk_text[:30],
             )
-            return _ANG_CORRECTED_TMPL.format(text=tuk_text, correct=correction)
-
         return tuk_text
 
     cleaned = _TUK_RE.sub(_replace_tuk, answer)
 
-    # ── Pass 2: check untagged Gurmukhi runs (≥4 words) ────────────────────
+    # ── Pass 2: check untagged Gurmukhi runs ────────────────────────────────
     def _check_untagged(m: re.Match) -> str:
         run = m.group(0).strip()
-        if "॥" not in run and "।" not in run:
-            return run  # plain Punjabi prose — not a scripture quote
-        words = [w for w in _GURMUKHI_WORD_RE.findall(run) if w]
-        if len(words) < 4:
-            return run  # short terms / single words — pass through
+        if not _run_needs_verification(run, m.string[: m.start()]):
+            return run
         if _verify_quote(run) is not None:
             return run  # genuine Gurbani
         failed_quotes.append(run)
@@ -282,22 +367,17 @@ class StreamingVerifier:
     Plain prose is emitted as soon as it arrives. Anything that could be a
     scripture quote — a <tuk> element or a run of Gurmukhi text — is held
     back until it is complete, verified through exactly the same rules as
-    the non-streaming path (trusted passage lines → local corpus → BaniDB
-    fallback), and only then released. Unverifiable quotes stream out
-    already replaced, so no unverified Gurbani is ever visible, not even
-    transiently.
-
-    Usage:
-        sv = StreamingVerifier(trusted_lines=...)
-        for chunk in llm_stream:
-            emit(sv.feed(chunk))
-        emit(sv.close())
-        sv.failed_quotes  # accumulated stripped quotes
+    the non-streaming path, and only then released. Unverifiable quotes
+    stream out already replaced, so no unverified Gurbani is ever visible,
+    not even transiently. Recently emitted text is tracked so the
+    attribution-phrase rule for danda-free runs works across chunk
+    boundaries.
     """
 
-    def __init__(self, trusted_lines: dict[str, set[int]] | None = None):
+    def __init__(self, trusted_lines: dict | None = None):
         self._trusted = trusted_lines
         self._buf = ""
+        self._context = ""   # tail of already-emitted text (for attribution rule)
         self.failed_quotes: list[str] = []
 
     def _verify_fragment(self, fragment: str) -> str:
@@ -332,7 +412,9 @@ class StreamingVerifier:
             out.append(emitted)
             if not progressed:
                 break  # need more stream data
-        return "".join(out)
+        text = "".join(out)
+        self._context = (self._context + text)[-100:]
+        return text
 
     def _consume_tag(self, final: bool) -> tuple[str, bool]:
         """Buffer starts with '<'. Returns (text_to_emit, made_progress)."""
@@ -362,4 +444,11 @@ class StreamingVerifier:
         if i == len(self._buf) and not final and len(self._buf) <= _MAX_HOLD:
             return "", False  # run may continue in the next chunk
         run, self._buf = self._buf[:i], self._buf[i:]
-        return self._verify_fragment(run), True
+        core = run.strip()
+        if not _run_needs_verification(core, self._context):
+            return run, True
+        # Force the run through pass-1 verification by wrapping it as a tuk;
+        # the tags never reach the output (verified text or the replacement).
+        lead = run[: len(run) - len(run.lstrip())]
+        trail = run[len(run.rstrip()):]
+        return lead + self._verify_fragment(f"<tuk>{core}</tuk>") + trail, True

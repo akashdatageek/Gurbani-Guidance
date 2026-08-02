@@ -101,11 +101,17 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 
 def _client_ip(request: Request) -> str:
-    """Real client IP: first X-Forwarded-For hop when TRUST_PROXY, else peer."""
+    """Real client IP for rate limiting.
+
+    With TRUST_PROXY, uses the RIGHTMOST X-Forwarded-For hop — the one
+    appended by the edge proxy we sit behind. The leftmost hop is client
+    supplied and trivially spoofable unless the edge strips inbound XFF,
+    so it must never feed a rate limiter.
+    """
     if TRUST_PROXY:
         xff = request.headers.get("x-forwarded-for", "")
         if xff:
-            return xff.split(",")[0].strip()
+            return xff.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
 
 
@@ -113,8 +119,9 @@ def _check_auth(request: Request) -> None:
     """Enforce bearer-token auth when API_TOKEN is configured."""
     if not API_TOKEN:
         return
+    import secrets
     header = request.headers.get("authorization", "")
-    if header != f"Bearer {API_TOKEN}":
+    if not secrets.compare_digest(header, f"Bearer {API_TOKEN}"):
         raise HTTPException(401, detail="Missing or invalid API token.")
 
 
@@ -136,6 +143,12 @@ def _check_daily_cap() -> None:
             429, detail="Daily request budget reached. Please try again tomorrow."
         )
     _daily_count += 1
+
+
+def _refund_daily() -> None:
+    """Give back a budget slot when a counted request fails before answering."""
+    global _daily_count
+    _daily_count = max(0, _daily_count - 1)
 
 
 _rate_limit_store: dict[str, list[float]] = defaultdict(list)
@@ -193,16 +206,23 @@ class AskResponse(BaseModel):
 
 @app.get("/health")
 async def health() -> dict:
-    return {"ok": True, "index_ready": _index_ready, "retrieval_mode": RETRIEVAL_MODE}
+    info: dict = {"ok": True, "index_ready": _index_ready, "retrieval_mode": RETRIEVAL_MODE}
+    if _index_ready and RETRIEVAL_MODE == "local":
+        try:
+            from src.retrieve import index_stats
+            info.update(index_stats())
+        except Exception:  # noqa: BLE001 — health must never fail
+            pass
+    return info
 
 
-# Cached at first call — corpus_stats() re-parses all ~60K lines through
+# Cached per corpus mtime — corpus_stats() re-parses all ~60K lines through
 # Pydantic, which is far too expensive to run per request.
-_stats_cache: dict | None = None
+_stats_cache: tuple[float, dict] | None = None
 
 
 @app.get("/stats")
-async def stats(request: Request) -> dict:
+def stats(request: Request) -> dict:
     global _stats_cache
     if not _check_rate_limit(_client_ip(request)):
         raise HTTPException(429, detail="Rate limit exceeded. Please wait before retrying.")
@@ -214,13 +234,14 @@ async def stats(request: Request) -> dict:
                 "source": "BaniDB v2 API (live, no local corpus)",
             }
         raise HTTPException(503, detail="Corpus not built for RETRIEVAL_MODE=local.")
-    if _stats_cache is None:
-        _stats_cache = {"retrieval_mode": RETRIEVAL_MODE, **corpus_stats()}
-    return _stats_cache
+    mtime = os.path.getmtime(SHABADS_FILE)
+    if _stats_cache is None or _stats_cache[0] != mtime:
+        _stats_cache = (mtime, {"retrieval_mode": RETRIEVAL_MODE, **corpus_stats()})
+    return _stats_cache[1]
 
 
 @app.post("/ask", response_model=AskResponse)
-async def ask_endpoint(request: Request, body: AskRequest) -> AskResponse:
+def ask_endpoint(request: Request, body: AskRequest) -> AskResponse:
     _check_auth(request)
     client_ip = _client_ip(request)
     if not _check_rate_limit(client_ip):
@@ -256,6 +277,7 @@ async def ask_endpoint(request: Request, body: AskRequest) -> AskResponse:
     try:
         result = deep_ask(body.question, **kwargs) if body.deep else ask(body.question, **kwargs)
     except Exception as exc:
+        _refund_daily()
         logger.exception("Error in /ask (q_hash=%s)", q_hash)
         raise HTTPException(500, detail="An internal error occurred. Please try again.") from exc
 
@@ -339,6 +361,7 @@ async def ask_stream_endpoint(request: Request, body: AskRequest) -> StreamingRe
                         body.deep,
                     )
         except Exception:  # noqa: BLE001 — surface as an SSE error event
+            _refund_daily()
             logger.exception("Error in /ask/stream (q_hash=%s)", q_hash)
             yield (
                 "data: "

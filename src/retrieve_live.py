@@ -1,4 +1,8 @@
-"""Live BaniDB retrieval — the DEFAULT retrieval backend (RETRIEVAL_MODE=banidb).
+"""Live BaniDB retrieval — OPTIONAL fallback backend (RETRIEVAL_MODE=banidb).
+
+Not the default: the default is the local hybrid semantic index
+(src/retrieve.py). Use this mode only when a local index cannot be built —
+lexical full-word search degrades situational/multilingual questions.
 
 Instead of crawling SGGS into a local corpus, this module queries the BaniDB
 search API at question time (https://api.banidb.com/v2/api-docs/ —

@@ -21,7 +21,7 @@ jobs:
       # index; test_rag needs a live LLM key).
       - name: Install test dependencies
         run: |
-          pip install pytest pydantic requests python-dotenv anthropic \
+          pip install pytest pydantic requests python-dotenv anthropic rank-bm25 \
                       fastapi httpx pyyaml
 
       - name: Unit tests

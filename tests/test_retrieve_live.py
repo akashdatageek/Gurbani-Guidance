@@ -114,9 +114,9 @@ def test_verify_trusted_lines_pass_without_corpus(monkeypatch):
     import src.verify as verify
     monkeypatch.setattr(verify, "_get_corpus_lines", lambda: {})
     called = []
-    monkeypatch.setattr(verify, "_banidb_find", lambda norm: called.append(norm) or (set(), False))
+    monkeypatch.setattr(verify, "_banidb_find", lambda norm: called.append(norm) or ((), ()))
 
-    trusted = {"ਸਤਿ ਨਾਮੁ ਕਰਤਾ ਪੁਰਖੁ": {1}}
+    trusted = {"ਸਤਿ ਨਾਮੁ ਕਰਤਾ ਪੁਰਖੁ": ((1, 0, 1),)}
     answer = '<tuk ang="1">ਸਤਿ ਨਾਮੁ ਕਰਤਾ ਪੁਰਖੁ</tuk>'
     cleaned, failed = verify.verify_answer(answer, trusted_lines=trusted)
     assert failed == []
@@ -127,7 +127,7 @@ def test_verify_trusted_lines_pass_without_corpus(monkeypatch):
 def test_verify_online_fallback_confirms_quote(monkeypatch):
     import src.verify as verify
     monkeypatch.setattr(verify, "_get_corpus_lines", lambda: {})
-    monkeypatch.setattr(verify, "_banidb_find", lambda norm: ({2}, False))
+    monkeypatch.setattr(verify, "_banidb_find", lambda norm: (((5, 9, 2),), ()))
 
     answer = '<tuk ang="2">ਆਦਿ ਸਚੁ ਜੁਗਾਦਿ ਸਚੁ ॥</tuk>'
     cleaned, failed = verify.verify_answer(answer, trusted_lines={})
@@ -138,7 +138,7 @@ def test_verify_online_fallback_confirms_quote(monkeypatch):
 def test_verify_online_failure_strips_quote(monkeypatch):
     import src.verify as verify
     monkeypatch.setattr(verify, "_get_corpus_lines", lambda: {})
-    monkeypatch.setattr(verify, "_banidb_find", lambda norm: (set(), False))
+    monkeypatch.setattr(verify, "_banidb_find", lambda norm: ((), ()))
 
     answer = '<tuk ang="1">ਫਰਜੀ ਤੁਕ ਜੋ ਮੌਜੂਦ ਨਹੀਂ ਹੈ</tuk>'
     cleaned, failed = verify.verify_answer(answer, trusted_lines={})
@@ -148,10 +148,10 @@ def test_verify_online_failure_strips_quote(monkeypatch):
 
 def test_verify_local_corpus_never_calls_online(monkeypatch):
     import src.verify as verify
-    corpus = {"ਸਤਿ ਨਾਮੁ ਕਰਤਾ ਪੁਰਖੁ": {1}}
+    corpus = {"ਸਤਿ ਨਾਮੁ ਕਰਤਾ ਪੁਰਖੁ": ((1, 0, 1),)}
     monkeypatch.setattr(verify, "_get_corpus_lines", lambda: corpus)
     called = []
-    monkeypatch.setattr(verify, "_banidb_find", lambda norm: called.append(norm) or (set(), False))
+    monkeypatch.setattr(verify, "_banidb_find", lambda norm: called.append(norm) or ((), ()))
 
     answer = '<tuk ang="1">ਫਰਜੀ ਤੁਕ ਜੋ ਮੌਜੂਦ ਨਹੀਂ ਹੈ</tuk>'
     cleaned, failed = verify.verify_answer(answer)

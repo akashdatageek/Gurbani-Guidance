@@ -287,7 +287,10 @@ def classify_question(
         return QuestionType.SITUATIONAL
 
     # History-aware REHAT stickiness: if last assistant turn included Rehat redirect
-    # and current question is a short follow-up, keep routing to REHAT
+    # and current question is a short follow-up, keep routing to REHAT.
+    # Trust note: history is client-supplied, so this marker is forgeable —
+    # the worst a forger achieves is the harmless Rehat Maryada redirect,
+    # which is why this stays a cheap string check.
     if history and len(history) >= 2:
         last_assistant = next(
             (m["content"] for m in reversed(history) if m.get("role") == "assistant"),
@@ -539,21 +542,23 @@ def retrieve(question: str, k: int = TOP_K, **filters: Any) -> list[Passage]:
     return retrieve_live(question, k=k, **filters)
 
 
-def _trusted_lines_from_passages(passages: list[Passage]) -> dict[str, set[int]]:
-    """Map normalized Gurmukhi -> angs for every retrieved passage line.
+def _trusted_lines_from_passages(passages: list[Passage]) -> dict[str, tuple]:
+    """Map normalized Gurmukhi -> (shabad_id, line_idx, ang) locations.
 
     These lines came verbatim from the source (BaniDB API or local corpus),
-    so verify_answer can accept quotes of them without extra lookups.
+    so verify_answer can accept quotes of them without extra lookups. The
+    window-relative line index preserves adjacency (windows are contiguous
+    slices of one shabad), which the stitched-quote defense relies on.
     """
-    trusted: dict[str, set[int]] = {}
+    trusted: dict[str, list] = {}
     for p in passages:
         for j, g in enumerate(p.gurmukhi):
             norm = normalize_gurmukhi(g)
             if not norm:
                 continue
-            ang = p.line_angs[j] if j < len(p.line_angs) else p.ang
-            trusted.setdefault(norm, set()).add(ang or p.ang)
-    return trusted
+            ang = (p.line_angs[j] if j < len(p.line_angs) else p.ang) or p.ang
+            trusted.setdefault(norm, []).append((p.shabad_id, j, ang))
+    return {k: tuple(v) for k, v in trusted.items()}
 
 
 # ---------------------------------------------------------------------------

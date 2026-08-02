@@ -58,14 +58,17 @@ def test_daily_cap_trips(app_module, monkeypatch):
     assert "budget" in r.json()["detail"].lower()
 
 
-def test_client_ip_uses_xff_only_when_trusted(app_module, monkeypatch):
+def test_client_ip_uses_rightmost_xff_hop_only_when_trusted(app_module, monkeypatch):
+    """The rightmost XFF hop is appended by OUR edge proxy; the leftmost is
+    client-supplied and spoofable — a spoofed prefix must not win."""
     class FakeClient:  # request.client stand-in
-        host = "10.0.0.1"
+        host = "172.17.0.1"
     class FakeRequest:
         client = FakeClient()
-        headers = {"x-forwarded-for": "203.0.113.7, 10.0.0.1"}
+        # attacker-supplied "1.2.3.4" + the real client appended by the edge
+        headers = {"x-forwarded-for": "1.2.3.4, 203.0.113.7"}
     monkeypatch.setattr(app_module, "TRUST_PROXY", False)
-    assert app_module._client_ip(FakeRequest()) == "10.0.0.1"
+    assert app_module._client_ip(FakeRequest()) == "172.17.0.1"
     monkeypatch.setattr(app_module, "TRUST_PROXY", True)
     assert app_module._client_ip(FakeRequest()) == "203.0.113.7"
 

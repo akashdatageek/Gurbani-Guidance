@@ -1,0 +1,17 @@
+NOTICE — Data Attribution
+
+The Gurbani corpus in this repository (data/shabads.jsonl.gz — Gurmukhi
+text, English translations by Bani DB / Manmohan Singh / Sant Singh Khalsa,
+transliterations, and Punjabi vyakhya from Prof. Sahib Singh's SGGS Darpan
+and the Faridkot Wala Teeka) originates from BaniDB (https://banidb.com),
+the community-maintained, proofread database of the Khalis Foundation.
+
+The BaniDB/Khalis Foundation team granted this project permission to use
+their database, including redistribution of this synced snapshot, by email
+in July 2026. The correspondence is on file with the repository maintainer
+(akashdatageek); contact them or the Khalis Foundation
+(contact@khalisfoundation.org) for details.
+
+This project is a non-commercial seva/educational effort. It claims no
+rights over Sri Guru Granth Sahib Ji, the translations, or the teekas —
+all credit belongs to the BaniDB sevadars and the original translators.
