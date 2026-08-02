@@ -299,14 +299,12 @@ Teeka) in `data/shabads.jsonl.gz` come from **[BaniDB](https://banidb.com)** —
 the community-maintained, proofread database of the Khalis Foundation that
 also powers SikhiToTheMax. Deep gratitude to their sevadars.
 
-> **Important:** BaniDB does not make its database fully open, and the bundled
-> translations/teekas carry their own copyrights. Before this repository is
-> distributed widely, the maintainers should seek permission from the
-> BaniDB/Khalis Foundation team (contact@khalisfoundation.org) for
-> redistributing the synced snapshot, or replace the committed snapshot with a
-> build-time sync (`python -m src.ingest`). This project is a non-commercial
-> seva/educational effort and claims no rights over the scripture or the
-> translations.
+> **Permission:** the BaniDB/Khalis Foundation team has granted this project
+> permission to use their database, including the corpus snapshot committed in
+> this repository (confirmed by email, July 2026). This project is a
+> non-commercial seva/educational effort and claims no rights over the
+> scripture, translations, or teekas; all credit for the proofread data
+> belongs to the BaniDB sevadars.
 
 ---
 
