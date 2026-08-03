@@ -10,6 +10,8 @@ services:
     volumes:
       # Mount the data directory (raw_angs/, shabads.jsonl, chroma/)
       - gurbani_data:/app/data
+    # NOTE: keep a single worker — the rate limiter and daily budget cap
+    # are in-memory and per-process (see src/app.py).
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]

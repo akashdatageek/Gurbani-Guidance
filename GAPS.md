@@ -167,3 +167,31 @@ python -m src.embed --reset # rebuild the vector index
 7. **Rate-limiter is per-process** (in-memory dict) and reads
    `request.client.host`, which is the proxy IP behind Railway/Cloud Run —
    consider honoring `X-Forwarded-For` from a trusted proxy.
+
+
+---
+
+## 5. Final status (post third review)
+
+All three reviews are resolved. Highlights beyond the original gap list:
+
+- **Shabad-scoped verification** — the verify corpus is keyed by
+  `(shabad_id, line_idx, ang)`; multi-line quotes must be one shabad with
+  adjacent lines, closing the stitched-quote exploit. Ang corrections only
+  for exact, unambiguous matches. Danda-free runs verified when preceded by
+  an attribution phrase.
+- **Streaming** (`POST /ask/stream`) with `StreamingVerifier` — quotes are
+  held until verified; nothing unverified is ever on the wire.
+- **Deploy correctness** — `retrieve.init()` fails loudly on an empty index;
+  `/health` reports passage counts; endpoints run in the threadpool.
+- **Spend protection** — optional bearer auth, global daily cap, proxy-aware
+  rate limiting.
+- **CI** — unit suite + corpus audit + mock model-output benchmark (safety
+  checks required at 100%) on every push/PR.
+- **Licensing** — BaniDB/Khalis Foundation permission on record (NOTICE);
+  code under MIT (LICENSE).
+
+Remaining known limitations (documented, accepted):
+- Unattributed danda-free Punjabi prose is not verified (README scope note).
+- In-memory rate limit/daily cap assume a single worker process.
+- Eval q105 (Begampura) is a deliberately failing retrieval-recall target.

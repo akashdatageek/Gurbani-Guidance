@@ -34,20 +34,25 @@ User question  (ਸਵਾਲ)
                                       │
                                       ▼
                              ┌──────────────────┐
-                             │  claude/ Gemini  │
+                             │  Claude / Gemini │
                              │  (4000 tokens)   │
                              └────────┬─────────┘
-                                      │ raw answer
+                                      │ raw answer (full or token stream)
                                       ▼
-                    ┌─────────────────────────────────┐
-                    │  3-layer quote verifier          │
-                    │  1. <tuk> tags + ang validation  │
-                    │  2. Untagged Gurmukhi runs ≥4w   │
-                    │  3. Substring fallback           │
-                    └────────────────┬────────────────┘
-                                     │ verified answer
-                                     ▼
-                                 Response
+              ┌───────────────────────────────────────────────┐
+              │  Shabad-scoped quote verifier                 │
+              │  1. <tuk> tags — multi-line quotes must be    │
+              │     ONE shabad, lines adjacent in order;      │
+              │     ang corrections only if exact + unique    │
+              │  2. Untagged runs — danda-marked ≥4 words,    │
+              │     or attribution-preceded ≥6 words          │
+              │  3. Substring fallback for partial quotes     │
+              │  (streaming: StreamingVerifier holds quotes   │
+              │   until verified — nothing unverified ships)  │
+              └────────────────────┬──────────────────────────┘
+                                   │ verified answer / SSE deltas
+                                   ▼
+                               Response
 ```
 
 ### ਮਲਟੀ-ਏਜੰਟ ਰੂਟਿੰਗ — Multi-agent Routing
@@ -86,7 +91,7 @@ so refusals stay fast.
 | **Data quality** | `python -m src.audit` — structural checks + reference-tuk verification against known-good Gurbani; non-zero exit for CI |
 | **Multilingual** | English · ਪੰਜਾਬੀ (Gurmukhi) · Romanized Punjabi · Hinglish |
 | **Retrieval** | Hybrid dense (BAAI/bge-m3 + ChromaDB) + sparse (BM25) fused with Reciprocal Rank Fusion |
-| **Quote safety** | 3-layer verification — no fabricated ਗੁਰਬਾਣੀ ever reaches the user. **Scope:** the guarantee covers Gurmukhi-script quotes (`<tuk>` tags and danda-marked runs); transliterations and English translations are the model's own rendering and are not verified |
+| **Quote safety** | Shabad-scoped 3-layer verification — no fabricated ਗੁਰਬਾਣੀ ever reaches the user, and two real lines stitched together from different banis are rejected. **Scope:** the guarantee covers Gurmukhi-script quotes (`<tuk>` tags and danda-marked runs); transliterations and English translations are the model's own rendering and are not verified |
 | **Chunking** | Shabad-scoped 12-line windows, 2-line overlap — never crosses ਸ਼ਬਦ boundary |
 | **Routing** | 6-agent system; LLM (haiku) fallback for non-English queries |
 | **Deep Study** | Optional mode — decomposes a question into 3–5 facets, retrieves per facet (up to 16 passages) for richer, multi-angle answers |
@@ -111,11 +116,11 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env and set ANTHROPIC_API_KEY
 
-# 3. One-time corpus sync from the BaniDB API (throttled + resumable),
-#    then validate and index it
-python -m src.ingest
-python -m src.audit
+# 3. Build the dense index — the verified corpus already ships in the repo
+#    (data/shabads.jsonl.gz, auto-inflated on first use)
 python -m src.embed
+#    Optional: re-sync the corpus from the BaniDB API yourself:
+#    python -m src.ingest && python -m src.audit && python -m src.embed --reset
 
 # 4. Test the CLI  (ਪੁੱਛੋ — ask)
 python -m src.rag "What does Gurbani say about haumai?"
@@ -187,17 +192,29 @@ The Next.js chat UI deploys automatically via GitHub Actions on every push to `m
 ## ਟੈਸਟ — Tests
 
 ```bash
-# Unit tests (no index required)  — 32 tests
+# Unit tests (no index / no API key required) — 100+ tests, what CI runs
 pytest tests/ -v --ignore=tests/test_retrieve.py --ignore=tests/test_rag.py
 
-# Integration tests (require built index + ANTHROPIC_API_KEY)
-pytest tests/ -v -m integration
+# Index-backed retrieval tests (require a built ChromaDB index)
+pytest tests/test_retrieve.py -v
+
+# LLM integration tests (require ANTHROPIC_API_KEY)
+pytest tests/test_rag.py -v
 ```
 
 Test coverage:
-- `tests/test_corpus.py` — `make_windows`, shabad chunking
-- `tests/test_verify.py` — 3-layer quote verification
-- `tests/test_router.py` — all 6 `QuestionType` routes + false-positive prevention + REHAT stickiness
+- `tests/test_corpus.py` — `make_windows`, shabad chunking, gz corpus inflation
+- `tests/test_verify.py` — shabad-scoped quote verification (stitched-quote
+  rejection, adjacency, correction policy, danda-free attribution rule,
+  normalization robustness)
+- `tests/test_stream.py` — StreamingVerifier chunk-boundary behavior + SSE endpoint
+- `tests/test_router.py` — all 6 `QuestionType` routes, history sanitisation,
+  canned refusals
+- `tests/test_banidb.py` — BaniDB response-shape parsing, verseId ordering, audit
+- `tests/test_retrieve_live.py` / `tests/test_retrieve_logic.py` — live-mode +
+  retrieval logic (RRF, filters, BM25 incl. Gurmukhi tokens)
+- `tests/test_app.py` — auth, daily cap, rate limiting, proxy IP handling
+- `tests/test_benchmark.py` — benchmark harness checks
 
 ---
 
@@ -267,29 +284,31 @@ Gurbani-Guidance/
 │   ├── embed.py         — bge-m3 → ChromaDB
 │   ├── retrieve.py      — hybrid RRF retrieval
 │   ├── verify.py        — 3-layer quote verification
-│   ├── rag.py           — 6-agent RAG pipeline
-│   └── app.py           — FastAPI server
+│   ├── rag.py           — 6-agent RAG pipeline (ask / deep_ask / ask_stream)
+│   └── app.py           — FastAPI server (/ask, /ask/stream SSE, /health, /stats)
 ├── data/
 │   └── shabads.jsonl.gz — BaniDB-synced corpus snapshot (auto-inflated)
-├── web/                 — Next.js 14 chat UI
+├── web/                 — Next.js 14 chat UI (streaming with JSON fallback)
 │   ├── app/
 │   │   ├── page.tsx     — main chat interface
 │   │   ├── layout.tsx
 │   │   └── components/
 │   └── tailwind.config.ts
-├── tests/
-│   ├── test_corpus.py
-│   ├── test_verify.py
-│   └── test_router.py
+├── tests/               — unit + integration suites (see Tests section)
 ├── eval/
-│   └── run_eval.py      — 27 golden questions
+│   ├── run_eval.py      — retrieval golden questions (per-ang/per-writer)
+│   ├── benchmark.py     — end-to-end model-output benchmark (safety-gated)
+│   └── benchmark_questions.yaml
 ├── .github/
 │   └── workflows/
+│       ├── ci.yml       — tests + corpus audit + mock benchmark on every push/PR
 │       └── deploy.yml   — GitHub Pages auto-deploy
-├── Dockerfile
+├── Dockerfile           — ships the corpus snapshot; .dockerignore keeps it lean
 ├── docker-compose.yml
 ├── requirements.txt
-└── PLAN.md              — full design spec
+├── LICENSE              — MIT (source code only)
+├── NOTICE               — BaniDB data permission record
+└── PLAN.md              — original design spec (historical)
 ```
 
 ---
@@ -308,6 +327,9 @@ Gurbani-Guidance/
 | `MAX_TOKENS` | `4000` | Max generation tokens |
 | `RETRIEVAL_MODE` | `local` | `local` = hybrid dense+BM25 semantic RAG (default); `banidb` = live lexical search, no index |
 | `BANIDB_SEARCH_RESULTS` | `20` | Results per BaniDB search call (live mode / verification fallback) |
+| `API_TOKEN` | *(empty)* | When set, `/ask` and `/ask/stream` require `Authorization: Bearer <token>` |
+| `DAILY_REQUEST_CAP` | `500` | Global daily budget backstop across all clients (0 = unlimited) |
+| `TRUST_PROXY` | `false` | Behind a trusted reverse proxy only: rate-limit by the rightmost `X-Forwarded-For` hop |
 | `SIMILARITY_THRESHOLD` | `0.48` | Min cosine similarity; below → out-of-scope |
 | `TOP_K` | `8` | Passages returned to the LLM |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |

@@ -84,7 +84,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Gurbani Guidance API",
     description="RAG-powered question answering grounded in Sri Guru Granth Sahib Ji",
-    version="1.1.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
