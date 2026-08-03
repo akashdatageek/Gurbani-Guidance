@@ -212,7 +212,7 @@ _SITUATIONAL_RE = re.compile(
     r"\bi(?:'m| am)\s+(?:feeling|going\s+through|struggling|suffering|grieving|"
     r"dealing\s+with|facing|lost|broken|alone|scared|helpless|hopeless|overwhelmed|"
     r"stuck|confused|not\s+sure|unsure|worried|stressed|anxious|depressed|tired\s+of)\b|"
-    r"\bi\s+feel\s+(?:so\s+)?(?:lost|alone|scared|helpless|overwhelmed|hopeless|broken|sad|empty|stuck|confused)\b|"
+    r"\bi\s+feel\s+(?:(?:so|very|really|completely|totally|utterly|quite|extremely)\s+)*(?:lost|alone|scared|helpless|overwhelmed|hopeless|broken|sad|empty|stuck|confused)\b|"
     r"\bi(?:'ve| have)\s+(?:been\s+(?:feeling|struggling)|lost\s+(?:my|a\s+\w+)|"
     r"failed|made\s+a\s+mistake|no\s+direction|lost\s+my\s+way)\b|"
     r"\bhelp\s+me\s+(?:with|through|deal\s+with|cope\s+with|get\s+through|find\s+(?:my\s+)?(?:way|purpose|direction))\b|"

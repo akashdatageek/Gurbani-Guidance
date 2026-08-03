@@ -120,3 +120,14 @@ def test_canned_refusals_no_llm(monkeypatch):
     result = rag.ask("Tell me the birth story of Guru Nanak")
     assert result["question_type"] == "out_of_scope"
     assert result["sources"] == []
+
+
+def test_situational_with_intensifier_adverbs():
+    """Benchmark b101 regression: adverbs between 'feel' and the emotion."""
+    from src.rag import classify_question, QuestionType
+    for q in [
+        "I feel completely hopeless and alone, nothing is going right in my life",
+        "I feel so utterly lost these days",
+        "I feel really overwhelmed by everything",
+    ]:
+        assert classify_question(q) == QuestionType.SITUATIONAL, q

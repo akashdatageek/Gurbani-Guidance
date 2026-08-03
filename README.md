@@ -210,8 +210,32 @@ python eval/run_eval.py
 python eval/run_eval.py --skip-adversarial
 ```
 
-Runs 27 golden questions and prints a summary table.  
+Runs the golden questions and prints a summary table.  
 Exits non-zero if retrieval hit-rate < 80 % or any non-adversarial answer contains a stripped quote.
+
+### ਮਾਪਦੰਡ — Model-output Benchmark
+
+An end-to-end benchmark that tests the ANSWERS the model produces — routing,
+quote safety, Rehat redirects, refusals, content grounding — in a proper
+test loop (repeat runs to expose nondeterminism, retries on transient
+errors, per-category summary, JSON report).
+
+```bash
+# Real model (needs ANTHROPIC_API_KEY or GEMINI_API_KEY); 2 repeat runs
+python eval/benchmark.py --runs 2
+
+# Deterministic, key-free (mock model built from real retrieved passages);
+# this is what CI runs on every push/PR
+python eval/benchmark.py --mock --force-scan-retrieval
+
+# Options: --deep, --only b001,b301, --threshold 0.8, --report path.json
+```
+
+**Safety checks are required at 100%** on every case: no leaked `<tuk>`
+tags, zero stripped quotes, and every Gurmukhi run in the final answer is
+independently re-verified against the corpus. Behaviour checks (routing,
+Gurmukhi presence, sources, notices) run in all modes; content checks
+(expected terms/angs/writers) apply to real-model runs.
 
 ---
 
