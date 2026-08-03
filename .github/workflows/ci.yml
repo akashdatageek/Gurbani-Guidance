@@ -21,7 +21,7 @@ jobs:
       # index; test_rag needs a live LLM key).
       - name: Install test dependencies
         run: |
-          pip install pytest pydantic requests python-dotenv anthropic \
+          pip install pytest pydantic requests python-dotenv anthropic rank-bm25 \
                       fastapi httpx pyyaml
 
       - name: Unit tests
@@ -32,3 +32,10 @@ jobs:
 
       - name: Corpus accuracy audit
         run: python -m src.audit
+
+      # Full-pipeline benchmark with a deterministic mock model and a
+      # pure-python retriever — validates routing, quote safety (incl.
+      # independent re-verification of every Gurmukhi run in the final
+      # answer), Rehat notices, and refusals on every push/PR.
+      - name: Model-output benchmark (mock)
+        run: python eval/benchmark.py --mock --force-scan-retrieval --runs 1

@@ -33,7 +33,10 @@ from src.corpus import ensure_corpus, load_shabads, make_windows
 
 logger = logging.getLogger(__name__)
 
-_PUNCT_RE = _re.compile(r"[^\w\s]")  # strip punctuation for BM25 tokenization
+# Strip punctuation for BM25 tokenization. The Gurmukhi block is kept
+# explicitly: Python's \w excludes combining marks (vowel signs like ੈ/ਿ are
+# category Mn), which would otherwise split every Gurmukhi word apart.
+_PUNCT_RE = _re.compile(r"[^\w\s਀-੿]")
 
 
 @dataclass
@@ -60,7 +63,7 @@ _bm25_passages: list[dict] = []
 
 # Bump when the BM25 tokenization or passage schema changes — stale pickles
 # with an older version are rebuilt.
-_BM25_CACHE_VERSION = 2
+_BM25_CACHE_VERSION = 3
 
 
 def _build_bm25(BM25Okapi) -> tuple[Any, list[dict]]:
@@ -121,6 +124,18 @@ def init() -> None:
         name=CHROMA_COLLECTION,
         metadata={"hnsw:space": "cosine"},
     )
+    # Fail LOUDLY on an empty collection. get_or_create silently returns a
+    # fresh empty collection on a new volume — dense retrieval would return
+    # nothing, the similarity gate would never fire, and the server would
+    # degrade to BM25-only while reporting itself healthy.
+    dense_count = _collection.count()
+    if dense_count == 0:
+        _embedder = None  # reset so a later init() retries cleanly
+        raise RuntimeError(
+            f"ChromaDB collection '{CHROMA_COLLECTION}' at {CHROMA_DIR} is EMPTY. "
+            "Run `python -m src.embed` to build the dense index before serving."
+        )
+    logger.info("Dense index ready: %d passages.", dense_count)
 
     # BM25: load from pickle cache when fresh, else build and cache.
     # Rebuilding re-windows all ~60K lines — pointless work on every boot.
@@ -307,21 +322,23 @@ def retrieve(
 
     where = _build_chroma_where(filters)
     dense = _dense_retrieve(question, k=DENSE_K, where=where)
-
-    # Relevance gate: if best dense hit is below threshold, treat as no-hit.
-    # Applied only to sentence-like queries (3+ content words): terse keyword
-    # lookups ("haumai", "anand") legitimately score in the same dense band
-    # as off-topic sentences, but they get exact-token BM25 support and are
-    # practically always in-domain — gating them would block real questions.
-    content_words = [t for t in _PUNCT_RE.sub(" ", question.lower()).split() if len(t) > 2]
-    if len(content_words) >= 3 and dense and dense[0][1] < min_similarity:
-        logger.info(
-            "Best dense similarity %.3f < threshold %.3f — treating as out-of-scope.",
-            dense[0][1], min_similarity,
-        )
-        return []
-
     sparse = _sparse_retrieve(question, k=SPARSE_K, filters=filters)
+
+    # Relevance gate: if the best dense hit is below threshold, treat as
+    # no-hit. Terse keyword lookups ("haumai", "anand") legitimately score
+    # in the same dense band as off-topic sentences, so for queries under 3
+    # content words the gate additionally requires the sparse side to have
+    # ZERO lexical evidence — "haumai" has huge BM25 support, while
+    # "bitcoin price" matches nothing and is gated out.
+    if dense and dense[0][1] < min_similarity:
+        content_words = [t for t in _PUNCT_RE.sub(" ", question.lower()).split() if len(t) > 2]
+        sparse_top = sparse[0][1] if sparse else 0.0
+        if len(content_words) >= 3 or sparse_top <= 0.0:
+            logger.info(
+                "Best dense similarity %.3f < threshold %.3f (sparse_top=%.2f) — out-of-scope.",
+                dense[0][1], min_similarity, sparse_top,
+            )
+            return []
     fused = _rrf_fuse(dense, sparse, k_param=RRF_K, top_k=k)
     return _lookup_passages_batch(fused)
 
@@ -340,3 +357,13 @@ def _build_chroma_where(filters: dict) -> dict | None:
     if not conditions:
         return None
     return conditions[0] if len(conditions) == 1 else {"$and": conditions}
+
+
+def index_stats() -> dict:
+    """Passage counts for health reporting (zeros when init() hasn't run)."""
+    dense = 0
+    try:
+        dense = _collection.count() if _collection is not None else 0
+    except Exception:  # noqa: BLE001
+        pass
+    return {"dense_passages": dense, "bm25_passages": len(_bm25_passages)}

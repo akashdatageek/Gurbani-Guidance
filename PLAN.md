@@ -1,5 +1,13 @@
 # Gurbani RAG — Implementation Plan
 
+> **HISTORICAL DOCUMENT** — this is the original implementation plan, kept
+> for context. The implemented system has evolved substantially beyond it:
+> BaniDB-synced committed corpus (no PDF), shabad-scoped quote verification,
+> SSE streaming with a streaming verifier, API spend protection, CI with a
+> corpus audit and a model-output benchmark. See README.md for the current
+> architecture and GAPS.md for the data-accuracy record.
+
+
 ## Overview
 A Retrieval-Augmented Generation system for Sri Guru Granth Sahib Ji (SGGS), the eternal Guru of the Sikhs.
 The system allows users to ask questions and receive answers grounded exclusively in Gurbani (scripture),

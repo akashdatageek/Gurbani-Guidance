@@ -18,8 +18,13 @@ def ensure_corpus(path: str = SHABADS_FILE) -> str:
     """
     if not os.path.exists(path) and os.path.exists(path + ".gz"):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with gzip.open(path + ".gz", "rb") as fin, open(path, "wb") as fout:
+        # Inflate to a temp file and os.replace so a crash mid-gunzip can
+        # never leave a truncated corpus that consumers would treat as valid
+        # (a truncated corpus makes verification strip REAL quotes).
+        tmp_path = path + ".tmp"
+        with gzip.open(path + ".gz", "rb") as fin, open(tmp_path, "wb") as fout:
             shutil.copyfileobj(fin, fout)
+        os.replace(tmp_path, path)
     return path
 
 

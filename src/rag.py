@@ -212,7 +212,7 @@ _SITUATIONAL_RE = re.compile(
     r"\bi(?:'m| am)\s+(?:feeling|going\s+through|struggling|suffering|grieving|"
     r"dealing\s+with|facing|lost|broken|alone|scared|helpless|hopeless|overwhelmed|"
     r"stuck|confused|not\s+sure|unsure|worried|stressed|anxious|depressed|tired\s+of)\b|"
-    r"\bi\s+feel\s+(?:so\s+)?(?:lost|alone|scared|helpless|overwhelmed|hopeless|broken|sad|empty|stuck|confused)\b|"
+    r"\bi\s+feel\s+(?:(?:so|very|really|completely|totally|utterly|quite|extremely)\s+)*(?:lost|alone|scared|helpless|overwhelmed|hopeless|broken|sad|empty|stuck|confused)\b|"
     r"\bi(?:'ve| have)\s+(?:been\s+(?:feeling|struggling)|lost\s+(?:my|a\s+\w+)|"
     r"failed|made\s+a\s+mistake|no\s+direction|lost\s+my\s+way)\b|"
     r"\bhelp\s+me\s+(?:with|through|deal\s+with|cope\s+with|get\s+through|find\s+(?:my\s+)?(?:way|purpose|direction))\b|"
@@ -287,7 +287,10 @@ def classify_question(
         return QuestionType.SITUATIONAL
 
     # History-aware REHAT stickiness: if last assistant turn included Rehat redirect
-    # and current question is a short follow-up, keep routing to REHAT
+    # and current question is a short follow-up, keep routing to REHAT.
+    # Trust note: history is client-supplied, so this marker is forgeable —
+    # the worst a forger achieves is the harmless Rehat Maryada redirect,
+    # which is why this stays a cheap string check.
     if history and len(history) >= 2:
         last_assistant = next(
             (m["content"] for m in reversed(history) if m.get("role") == "assistant"),
@@ -539,21 +542,23 @@ def retrieve(question: str, k: int = TOP_K, **filters: Any) -> list[Passage]:
     return retrieve_live(question, k=k, **filters)
 
 
-def _trusted_lines_from_passages(passages: list[Passage]) -> dict[str, set[int]]:
-    """Map normalized Gurmukhi -> angs for every retrieved passage line.
+def _trusted_lines_from_passages(passages: list[Passage]) -> dict[str, tuple]:
+    """Map normalized Gurmukhi -> (shabad_id, line_idx, ang) locations.
 
     These lines came verbatim from the source (BaniDB API or local corpus),
-    so verify_answer can accept quotes of them without extra lookups.
+    so verify_answer can accept quotes of them without extra lookups. The
+    window-relative line index preserves adjacency (windows are contiguous
+    slices of one shabad), which the stitched-quote defense relies on.
     """
-    trusted: dict[str, set[int]] = {}
+    trusted: dict[str, list] = {}
     for p in passages:
         for j, g in enumerate(p.gurmukhi):
             norm = normalize_gurmukhi(g)
             if not norm:
                 continue
-            ang = p.line_angs[j] if j < len(p.line_angs) else p.ang
-            trusted.setdefault(norm, set()).add(ang or p.ang)
-    return trusted
+            ang = (p.line_angs[j] if j < len(p.line_angs) else p.ang) or p.ang
+            trusted.setdefault(norm, []).append((p.shabad_id, j, ang))
+    return {k: tuple(v) for k, v in trusted.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -737,18 +742,7 @@ def ask(
         logger.warning("Removed %d unverified quote(s): %s", len(failed_quotes), failed_quotes)
 
     # Deduplicate sources by shabad_id (keep highest score)
-    seen_shabad: dict[int, dict] = {}
-    for p in passages:
-        sid = p.shabad_id
-        if sid not in seen_shabad or p.score > seen_shabad[sid]["score"]:
-            seen_shabad[sid] = {
-                "shabad_id": sid,
-                "ang": p.ang,
-                "raag": p.raag,
-                "writer": p.writer,
-                "score": round(p.score, 4),
-            }
-    sources = sorted(seen_shabad.values(), key=lambda s: s["score"], reverse=True)
+    sources = _dedupe_sources(passages)
 
     return {
         "answer": verified_answer,
@@ -899,6 +893,21 @@ def deep_ask(
     if failed_quotes:
         logger.warning("Removed %d unverified quote(s): %s", len(failed_quotes), failed_quotes)
 
+    sources = _dedupe_sources(passages)
+
+    return {
+        "answer": verified_answer,
+        "failed_quotes": failed_quotes,
+        "sources": sources,
+        "question_type": qtype.value,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Streaming pipeline
+# ---------------------------------------------------------------------------
+
+def _dedupe_sources(passages: list[Passage]) -> list[dict]:
     seen_shabad: dict[int, dict] = {}
     for p in passages:
         sid = p.shabad_id
@@ -910,12 +919,145 @@ def deep_ask(
                 "writer": p.writer,
                 "score": round(p.score, 4),
             }
-    sources = sorted(seen_shabad.values(), key=lambda s: s["score"], reverse=True)
+    return sorted(seen_shabad.values(), key=lambda s: s["score"], reverse=True)
 
-    return {
-        "answer": verified_answer,
-        "failed_quotes": failed_quotes,
-        "sources": sources,
+
+_NO_PASSAGES_ANSWER = (
+    "I was unable to find relevant passages in Sri Guru Granth Sahib Ji "
+    "for your question. This topic may not be addressed in SGGS, or try "
+    "rephrasing. For guidance, consult a qualified Granthi."
+)
+
+
+def _llm_stream(system: str, messages: list[dict], max_tokens: int = MAX_TOKENS):
+    """Yield answer text chunks from the configured provider."""
+    if PROVIDER == "gemini":
+        from google.genai import types
+        client = _get_gemini_client()
+        contents = []
+        for m in messages:
+            role = "user" if m["role"] == "user" else "model"
+            contents.append(types.Content(role=role, parts=[types.Part(text=m["content"])]))
+        stream = client.models.generate_content_stream(
+            model=GEMINI_MODEL,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system,
+                max_output_tokens=max_tokens,
+            ),
+        )
+        for chunk in stream:
+            try:
+                if chunk.text:
+                    yield chunk.text
+            except ValueError:
+                continue  # safety-filtered chunk
+    else:
+        client = _get_anthropic_client()
+        with client.messages.stream(
+            model=CLAUDE_MODEL,
+            max_tokens=max_tokens,
+            system=system,
+            messages=messages,
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
+
+
+def ask_stream(
+    question: str,
+    history: list[dict] | None = None,
+    writer: str | None = None,
+    raag: str | None = None,
+    ang_range: tuple[int, int] | None = None,
+    k: int = TOP_K,
+    deep: bool = False,
+):
+    """Streaming RAG pipeline. Yields event dicts:
+
+        {"type": "status", "stage": "retrieving" | "generating"}
+        {"type": "delta",  "text": "..."}         # verified-safe text
+        {"type": "done",   "sources": [...], "failed_quotes": [...],
+                            "question_type": "..."}
+
+    Quote safety is identical to ask(): deltas pass through
+    StreamingVerifier, which holds <tuk> elements and Gurmukhi runs until
+    verified — unverified Gurbani is never emitted, even transiently.
+    """
+    from src.verify import StreamingVerifier
+
+    clean_history = _sanitise_history(history or [])
+    qtype = classify_question(question, history=clean_history)
+    logger.info("Stream question type: %s | question: %.80s", qtype.value, question)
+
+    if qtype in _CANNED_RESPONSES:
+        yield {"type": "delta", "text": _CANNED_RESPONSES[qtype]}
+        yield {"type": "done", "sources": [], "failed_quotes": [], "question_type": qtype.value}
+        return
+
+    yield {"type": "status", "stage": "retrieving"}
+    retrieval_query = _condense_query(question, clean_history)
+
+    filter_kwargs: dict[str, Any] = {}
+    if writer:
+        filter_kwargs["writer"] = writer
+    if raag:
+        filter_kwargs["raag"] = raag
+    if ang_range:
+        filter_kwargs["ang_range"] = ang_range
+
+    deep_eligible = qtype in (
+        QuestionType.CONCEPTUAL, QuestionType.SITUATIONAL, QuestionType.COMPARATIVE
+    )
+    if deep and deep_eligible:
+        max_passages = min(k * 2, 16)
+        if qtype == QuestionType.COMPARATIVE and not filter_kwargs:
+            passages = _comparative_retrieve(retrieval_query, k=max_passages)
+        else:
+            facets = _decompose_question(retrieval_query)
+            passages = _facet_retrieve(retrieval_query, facets, k=max_passages, **filter_kwargs)
+    elif qtype == QuestionType.COMPARATIVE and not filter_kwargs:
+        passages = _comparative_retrieve(retrieval_query, k=k)
+    else:
+        passages = retrieve(retrieval_query, k=k, **filter_kwargs)
+
+    if not passages:
+        yield {"type": "delta", "text": _NO_PASSAGES_ANSWER}
+        yield {"type": "done", "sources": [], "failed_quotes": [], "question_type": qtype.value}
+        return
+
+    context_text = _format_passages(passages)
+    user_content = (
+        f"## Relevant passages from Sri Guru Granth Sahib Ji\n\n"
+        f"{context_text}\n\n"
+        f"---\n\n"
+        f"## Question\n\n{question}"
+    )
+    messages: list[dict] = list(clean_history)
+    messages.append({"role": "user", "content": user_content})
+
+    yield {"type": "status", "stage": "generating"}
+    sv = StreamingVerifier(trusted_lines=_trusted_lines_from_passages(passages))
+    try:
+        for chunk in _llm_stream(system=_SYSTEM_PROMPTS[qtype], messages=messages):
+            safe = sv.feed(chunk)
+            if safe:
+                yield {"type": "delta", "text": safe}
+    except Exception as exc:
+        logger.error("LLM streaming error (%s): %s", PROVIDER, exc)
+        raise
+    tail = sv.close()
+    if tail:
+        yield {"type": "delta", "text": tail}
+
+    if sv.failed_quotes:
+        logger.warning("Removed %d unverified quote(s) during stream: %s",
+                       len(sv.failed_quotes), sv.failed_quotes)
+
+    yield {
+        "type": "done",
+        "sources": _dedupe_sources(passages),
+        "failed_quotes": sv.failed_quotes,
         "question_type": qtype.value,
     }
 

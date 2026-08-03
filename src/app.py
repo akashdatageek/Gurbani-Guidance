@@ -1,7 +1,8 @@
 """FastAPI server for Gurbani RAG.
 
 Endpoints:
-    POST /ask     — main RAG endpoint
+    POST /ask         — main RAG endpoint (JSON)
+    POST /ask/stream  — Server-Sent Events stream (verified-safe deltas)
     GET  /health  — liveness check
     GET  /stats   — corpus statistics
 
@@ -20,6 +21,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.config import (
@@ -82,7 +84,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Gurbani Guidance API",
     description="RAG-powered question answering grounded in Sri Guru Granth Sahib Ji",
-    version="1.1.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -99,11 +101,17 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 
 def _client_ip(request: Request) -> str:
-    """Real client IP: first X-Forwarded-For hop when TRUST_PROXY, else peer."""
+    """Real client IP for rate limiting.
+
+    With TRUST_PROXY, uses the RIGHTMOST X-Forwarded-For hop — the one
+    appended by the edge proxy we sit behind. The leftmost hop is client
+    supplied and trivially spoofable unless the edge strips inbound XFF,
+    so it must never feed a rate limiter.
+    """
     if TRUST_PROXY:
         xff = request.headers.get("x-forwarded-for", "")
         if xff:
-            return xff.split(",")[0].strip()
+            return xff.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
 
 
@@ -111,8 +119,9 @@ def _check_auth(request: Request) -> None:
     """Enforce bearer-token auth when API_TOKEN is configured."""
     if not API_TOKEN:
         return
+    import secrets
     header = request.headers.get("authorization", "")
-    if header != f"Bearer {API_TOKEN}":
+    if not secrets.compare_digest(header, f"Bearer {API_TOKEN}"):
         raise HTTPException(401, detail="Missing or invalid API token.")
 
 
@@ -134,6 +143,12 @@ def _check_daily_cap() -> None:
             429, detail="Daily request budget reached. Please try again tomorrow."
         )
     _daily_count += 1
+
+
+def _refund_daily() -> None:
+    """Give back a budget slot when a counted request fails before answering."""
+    global _daily_count
+    _daily_count = max(0, _daily_count - 1)
 
 
 _rate_limit_store: dict[str, list[float]] = defaultdict(list)
@@ -191,16 +206,23 @@ class AskResponse(BaseModel):
 
 @app.get("/health")
 async def health() -> dict:
-    return {"ok": True, "index_ready": _index_ready, "retrieval_mode": RETRIEVAL_MODE}
+    info: dict = {"ok": True, "index_ready": _index_ready, "retrieval_mode": RETRIEVAL_MODE}
+    if _index_ready and RETRIEVAL_MODE == "local":
+        try:
+            from src.retrieve import index_stats
+            info.update(index_stats())
+        except Exception:  # noqa: BLE001 — health must never fail
+            pass
+    return info
 
 
-# Cached at first call — corpus_stats() re-parses all ~60K lines through
+# Cached per corpus mtime — corpus_stats() re-parses all ~60K lines through
 # Pydantic, which is far too expensive to run per request.
-_stats_cache: dict | None = None
+_stats_cache: tuple[float, dict] | None = None
 
 
 @app.get("/stats")
-async def stats(request: Request) -> dict:
+def stats(request: Request) -> dict:
     global _stats_cache
     if not _check_rate_limit(_client_ip(request)):
         raise HTTPException(429, detail="Rate limit exceeded. Please wait before retrying.")
@@ -212,13 +234,14 @@ async def stats(request: Request) -> dict:
                 "source": "BaniDB v2 API (live, no local corpus)",
             }
         raise HTTPException(503, detail="Corpus not built for RETRIEVAL_MODE=local.")
-    if _stats_cache is None:
-        _stats_cache = {"retrieval_mode": RETRIEVAL_MODE, **corpus_stats()}
-    return _stats_cache
+    mtime = os.path.getmtime(SHABADS_FILE)
+    if _stats_cache is None or _stats_cache[0] != mtime:
+        _stats_cache = (mtime, {"retrieval_mode": RETRIEVAL_MODE, **corpus_stats()})
+    return _stats_cache[1]
 
 
 @app.post("/ask", response_model=AskResponse)
-async def ask_endpoint(request: Request, body: AskRequest) -> AskResponse:
+def ask_endpoint(request: Request, body: AskRequest) -> AskResponse:
     _check_auth(request)
     client_ip = _client_ip(request)
     if not _check_rate_limit(client_ip):
@@ -254,6 +277,7 @@ async def ask_endpoint(request: Request, body: AskRequest) -> AskResponse:
     try:
         result = deep_ask(body.question, **kwargs) if body.deep else ask(body.question, **kwargs)
     except Exception as exc:
+        _refund_daily()
         logger.exception("Error in /ask (q_hash=%s)", q_hash)
         raise HTTPException(500, detail="An internal error occurred. Please try again.") from exc
 
@@ -273,4 +297,80 @@ async def ask_endpoint(request: Request, body: AskRequest) -> AskResponse:
         failed_quotes=result["failed_quotes"],
         sources=result["sources"],
         question_type=result.get("question_type", "conceptual"),
+    )
+
+
+@app.post("/ask/stream")
+async def ask_stream_endpoint(request: Request, body: AskRequest) -> StreamingResponse:
+    """Server-Sent Events stream of the answer.
+
+    Emits `data: {json}\n\n` events:
+        {"type":"status","stage":...} | {"type":"delta","text":...} |
+        {"type":"done","sources":...,"failed_quotes":...,"question_type":...} |
+        {"type":"error","detail":...}
+
+    Deltas are verified-safe: <tuk> elements and Gurmukhi runs are held back
+    by StreamingVerifier until verified, so no unverified Gurbani is ever on
+    the wire — the guarantee is identical to the non-streaming /ask.
+    """
+    import json as _json
+
+    _check_auth(request)
+    client_ip = _client_ip(request)
+    if not _check_rate_limit(client_ip):
+        raise HTTPException(429, detail="Rate limit exceeded. Please wait before retrying.")
+    _check_daily_cap()
+
+    if not _index_ready:
+        raise HTTPException(
+            503,
+            detail=(
+                "Search index not ready. Run the one-time BaniDB sync: "
+                "`python -m src.ingest && python -m src.audit && python -m src.embed`."
+            ),
+        )
+
+    from src.rag import ask_stream
+
+    kwargs: dict[str, Any] = {"deep": body.deep}
+    if body.history:
+        kwargs["history"] = [m.model_dump() for m in body.history]
+    if body.filters:
+        if body.filters.writer:
+            kwargs["writer"] = body.filters.writer
+        if body.filters.raag:
+            kwargs["raag"] = body.filters.raag
+        if body.filters.ang_start is not None and body.filters.ang_end is not None:
+            kwargs["ang_range"] = (body.filters.ang_start, body.filters.ang_end)
+
+    q_hash = hashlib.sha256(body.question.encode()).hexdigest()[:12]
+    t0 = time.monotonic()
+
+    def event_source():
+        try:
+            for event in ask_stream(body.question, **kwargs):
+                yield f"data: {_json.dumps(event, ensure_ascii=False)}\n\n"
+                if event.get("type") == "done":
+                    logger.info(
+                        "ask_stream q_hash=%s type=%s sources=%d failed_quotes=%d latency_ms=%d deep=%s",
+                        q_hash,
+                        event.get("question_type"),
+                        len(event.get("sources", [])),
+                        len(event.get("failed_quotes", [])),
+                        int((time.monotonic() - t0) * 1000),
+                        body.deep,
+                    )
+        except Exception:  # noqa: BLE001 — surface as an SSE error event
+            _refund_daily()
+            logger.exception("Error in /ask/stream (q_hash=%s)", q_hash)
+            yield (
+                "data: "
+                + _json.dumps({"type": "error", "detail": "An internal error occurred. Please try again."})
+                + "\n\n"
+            )
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
