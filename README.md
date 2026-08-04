@@ -338,6 +338,30 @@ Gurbani-Guidance/
 
 ---
 
+## ਉਤਪਾਦਨ — Production Operations (Stage-0)
+
+The launch-blocking operational layer (see `docs/production-plan.md` for the
+full roadmap and status notes):
+
+- **Privacy:** question text is never logged (hash-only; `LOG_QUESTION_TEXT`
+  is a local-debug escape hatch). Draft privacy policy & ToS in `docs/`.
+- **Crisis safety:** explicit self-harm signals append crisis-helpline
+  resources (findahelpline.com + regional lines) and a care disclaimer.
+- **Shared state:** set `REDIS_URL` and rate limits, the daily budget cap,
+  and the response cache become replica-safe; without it, in-memory
+  fallbacks apply (single worker only).
+- **Semantic response cache:** verified answers to generic questions are
+  reused (exact + ≥0.97-cosine paraphrases) — the biggest LLM-cost lever.
+  SITUATIONAL and crisis-flagged questions are never cached.
+- **Overload behavior:** outbound LLM calls are bounded
+  (`LLM_MAX_CONCURRENCY`); saturation returns a friendly 503 instead of
+  piling up. `/ready` gates load-balancer traffic; `/health` stays liveness.
+- **Ops:** security headers on every response, Dependabot + `pip-audit` in
+  CI, `scripts/backup_data.sh` (cron-able), `scripts/loadtest.js` (k6) to
+  size the fleet against the real path, `docs/runbook.md` for incidents.
+
+---
+
 ## ਡਾਟਾ ਸਰੋਤ ਅਤੇ ਲਾਇਸੰਸ — Data Attribution & Licensing
 
 The Gurbani text, translations (Bani DB, Manmohan Singh, Sant Singh Khalsa),

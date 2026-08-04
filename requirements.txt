@@ -18,6 +18,9 @@ anthropic>=0.40
 # Gemini API (alternative provider — set PROVIDER=gemini to use)
 google-genai>=1.0
 
+# Shared state + response cache backend (optional — falls back to in-memory)
+redis>=5
+
 # API server
 fastapi>=0.110
 uvicorn[standard]>=0.29

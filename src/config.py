@@ -71,6 +71,32 @@ CHROMA_COLLECTION = "sggs"
 EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "64"))
 EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-m3")
 
+# ── Privacy ──────────────────────────────────────────────────────────────────
+# Question text is sensitive (grief, depression, family crises). By default
+# only a SHA-256 hash prefix is logged; set true ONLY for local debugging.
+LOG_QUESTION_TEXT = os.getenv("LOG_QUESTION_TEXT", "false").lower() in ("1", "true", "yes")
+
+# ── Shared state / caching (production) ──────────────────────────────────────
+# Optional Redis for rate-limit/budget state and the response cache. When
+# unset, in-memory fallbacks are used (single-process semantics — fine for
+# one worker, NOT for multiple replicas).
+REDIS_URL = os.getenv("REDIS_URL", "")
+# Semantic response cache: reuse verified answers for repeated/paraphrased
+# history-less questions. The single highest-leverage LLM-cost lever.
+CACHE_ENABLED = os.getenv("CACHE_ENABLED", "true").lower() in ("1", "true", "yes")
+CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", str(7 * 24 * 3600)))
+# Cosine similarity for a paraphrase hit — deliberately high: only
+# near-duplicates may share an answer.
+CACHE_SIMILARITY_THRESHOLD = float(os.getenv("CACHE_SIMILARITY_THRESHOLD", "0.97"))
+# Bump when prompts/pipeline change enough that cached answers must expire.
+PROMPT_VERSION = os.getenv("PROMPT_VERSION", "v2")
+
+# ── LLM outbound throttle ────────────────────────────────────────────────────
+# Bound concurrent provider calls (rate-limit protection); waiters past the
+# timeout get a friendly "high demand" 503 instead of piling up.
+LLM_MAX_CONCURRENCY = int(os.getenv("LLM_MAX_CONCURRENCY", "8"))
+LLM_QUEUE_TIMEOUT = float(os.getenv("LLM_QUEUE_TIMEOUT", "30"))
+
 # ── Rate limiting & spend protection ─────────────────────────────────────────
 RATE_LIMIT_WINDOW = float(os.getenv("RATE_LIMIT_WINDOW", "60.0"))   # seconds
 RATE_LIMIT_MAX = int(os.getenv("RATE_LIMIT_MAX", "10"))              # req per window

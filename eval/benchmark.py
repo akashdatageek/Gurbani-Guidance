@@ -199,6 +199,9 @@ def run_benchmark(args) -> int:
 
     import src.rag as rag
 
+    # Repeat runs must exercise the full pipeline, not the response cache
+    rag._response_cache.enabled = False
+
     if args.mock:
         rag._llm_call = _mock_llm
         rag._llm_lightweight_call = _mock_classify

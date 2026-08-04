@@ -46,12 +46,42 @@ from src.config import (
     SHABADS_FILE,
     TOP_K,
 )
-from src.config import RETRIEVAL_MODE
+from src.config import (
+    LLM_MAX_CONCURRENCY,
+    LLM_QUEUE_TIMEOUT,
+    LOG_QUESTION_TEXT,
+    RETRIEVAL_MODE,
+)
+from src.cache import ResponseCache
 from src.corpus import ensure_corpus, normalize_gurmukhi
 from src.retrieve import Passage
 from src.verify import verify_answer
 
 logger = logging.getLogger(__name__)
+
+
+class LLMBusyError(RuntimeError):
+    """Raised when the outbound LLM concurrency limit stays saturated past
+    LLM_QUEUE_TIMEOUT — callers degrade gracefully (friendly 503)."""
+
+
+# Bound concurrent provider calls across all threadpool workers so a traffic
+# spike cannot blow through provider rate limits; waiters time out instead of
+# piling up.
+import threading as _threading
+_llm_semaphore = _threading.BoundedSemaphore(LLM_MAX_CONCURRENCY)
+
+
+class _llm_slot:
+    def __enter__(self):
+        if not _llm_semaphore.acquire(timeout=LLM_QUEUE_TIMEOUT):
+            raise LLMBusyError("LLM concurrency limit saturated")
+        return self
+
+    def __exit__(self, *exc):
+        _llm_semaphore.release()
+        return False
+
 
 # Module-level clients — created once, reused across requests
 _anthropic_client: anthropic.Anthropic | None = None
@@ -82,6 +112,11 @@ def _get_gemini_client() -> Any:
 
 def _llm_call(system: str, messages: list[dict], max_tokens: int = MAX_TOKENS) -> str:
     """Unified LLM call — routes to Anthropic or Gemini based on PROVIDER."""
+    with _llm_slot():
+        return _llm_call_inner(system, messages, max_tokens)
+
+
+def _llm_call_inner(system: str, messages: list[dict], max_tokens: int = MAX_TOKENS) -> str:
     if PROVIDER == "gemini":
         import google.genai as genai
         from google.genai import types
@@ -118,6 +153,11 @@ def _llm_call(system: str, messages: list[dict], max_tokens: int = MAX_TOKENS) -
 
 
 def _llm_lightweight_call(prompt: str, max_tokens: int) -> str:
+    with _llm_slot():
+        return _llm_lightweight_call_inner(prompt, max_tokens)
+
+
+def _llm_lightweight_call_inner(prompt: str, max_tokens: int) -> str:
     """Cheap single-turn call on the classifier model. Returns raw text ("" if empty).
 
     For Gemini, 'thinking' is disabled so the whole token budget goes to output —
@@ -157,8 +197,74 @@ def _llm_classify_call(prompt: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Privacy-safe logging & crisis support
+# ---------------------------------------------------------------------------
+
+def _q_repr(question: str) -> str:
+    """Loggable form of a question. Question text is sensitive (grief,
+    depression, family crises) — log only a hash prefix unless
+    LOG_QUESTION_TEXT is explicitly enabled for local debugging."""
+    import hashlib
+    if LOG_QUESTION_TEXT:
+        return question[:80]
+    return "q#" + hashlib.sha256(question.encode()).hexdigest()[:12]
+
+
+# Distress signals that warrant crisis-resource signposting. Deliberately
+# narrow: matches explicit self-harm/suicide language (English + common
+# Punjabi/Hindi phrasings), not general sadness.
+_CRISIS_RE = re.compile(
+    r"\b(?:suicid\w*|kill(?:ing)?\s+myself|end(?:ing)?\s+my\s+life|"
+    r"take\s+my\s+own\s+life|self[\s-]?harm|hurt(?:ing)?\s+myself|"
+    r"don'?t\s+want\s+to\s+(?:live|be\s+alive)|no\s+reason\s+to\s+live|"
+    r"better\s+off\s+dead|end\s+it\s+all)\b"
+    r"|ਖੁਦਕੁਸ਼ੀ|ਖ਼ੁਦਕੁਸ਼ੀ|ਆਤਮ\s*ਹੱਤਿਆ|khudkushi|aatm\s*hatya",
+    re.IGNORECASE,
+)
+
+# Appended AFTER verification (contains no scripture quotes, so it can never
+# be mistaken for Gurbani). Wording: warm, non-clinical, no rulings.
+_CRISIS_NOTE = (
+    "\n\n---\n"
+    "It sounds like you are carrying something very heavy right now. Please "
+    "know that this service offers spiritual reflection from Sri Guru Granth "
+    "Sahib Ji — it is not a substitute for medical or mental-health care, and "
+    "you deserve real support from people who can be present with you.\n\n"
+    "If you are thinking about harming yourself, please reach out now: "
+    "call your local emergency number, or find a helpline for your country "
+    "at https://findahelpline.com (in India: iCall 9152987821, AASRA "
+    "+91-9820466726; US/Canada: call or text 988; UK: Samaritans 116 123). "
+    "The sangat and the Guru would want you here."
+)
+
+
+def _needs_crisis_note(question: str) -> bool:
+    return bool(_CRISIS_RE.search(question))
+
+
+def _append_crisis_note(answer: str, question: str) -> str:
+    return answer + _CRISIS_NOTE if _needs_crisis_note(question) else answer
+
+
+# ---------------------------------------------------------------------------
 # Question type enum
 # ---------------------------------------------------------------------------
+
+# Shared verified-answer cache (see src/cache.py for privacy rules)
+_response_cache = ResponseCache()
+
+
+def _cacheable(question, history, writer, raag, ang_range, k, qtype) -> bool:
+    """Only generic, context-free questions may share answers across users:
+    no history, no filters, default k, non-personal question type, and never
+    crisis-flagged."""
+    return (
+        not history and not writer and not raag and not ang_range
+        and k == TOP_K
+        and qtype in (QuestionType.CONCEPTUAL, QuestionType.COMPARATIVE, QuestionType.REHAT)
+        and not _needs_crisis_note(question)
+    )
+
 
 class QuestionType(str, Enum):
     CONCEPTUAL = "conceptual"
@@ -340,7 +446,7 @@ def _condense_query(question: str, history: list[dict]) -> str:
         return question
     # Merge: "previous question + follow-up"
     condensed = f"{last_user} {question}"
-    logger.debug("Condensed query: '%s' → '%s'", question, condensed)
+    logger.debug("Condensed query: %s → %s", _q_repr(question), _q_repr(condensed))
     return condensed
 
 
@@ -674,12 +780,19 @@ def ask(
     """Full RAG pipeline. Returns {answer, failed_quotes, sources, question_type}."""
     clean_history = _sanitise_history(history or [])
     qtype = classify_question(question, history=clean_history)
-    logger.info("Question type: %s | question: %.80s", qtype.value, question)
+    logger.info("Question type: %s | question: %s", qtype.value, _q_repr(question))
+
+    cacheable = _cacheable(question, clean_history, writer, raag, ang_range, k, qtype)
+    if cacheable:
+        cached = _response_cache.get(question)
+        if cached is not None:
+            logger.info("Response-cache hit for %s", _q_repr(question))
+            return {**cached, "cached": True}
 
     # Immediate refusals — fixed scripts, no retrieval and no LLM call
     if qtype in _CANNED_RESPONSES:
         return {
-            "answer": _CANNED_RESPONSES[qtype],
+            "answer": _append_crisis_note(_CANNED_RESPONSES[qtype], question),
             "failed_quotes": [],
             "sources": [],
             "question_type": qtype.value,
@@ -704,11 +817,7 @@ def ask(
 
     if not passages:
         return {
-            "answer": (
-                "I was unable to find relevant passages in Sri Guru Granth Sahib Ji "
-                "for your question. This topic may not be addressed in SGGS, or try "
-                "rephrasing. For guidance, consult a qualified Granthi."
-            ),
+            "answer": _append_crisis_note(_NO_PASSAGES_ANSWER, question),
             "failed_quotes": [],
             "sources": [],
             "question_type": qtype.value,
@@ -744,12 +853,15 @@ def ask(
     # Deduplicate sources by shabad_id (keep highest score)
     sources = _dedupe_sources(passages)
 
-    return {
-        "answer": verified_answer,
+    result = {
+        "answer": _append_crisis_note(verified_answer, question),
         "failed_quotes": failed_quotes,
         "sources": sources,
         "question_type": qtype.value,
     }
+    if cacheable and not failed_quotes and sources:
+        _response_cache.put(question, result)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -834,7 +946,7 @@ def deep_ask(
     """
     clean_history = _sanitise_history(history or [])
     qtype = classify_question(question, history=clean_history)
-    logger.info("Deep question type: %s | question: %.80s", qtype.value, question)
+    logger.info("Deep question type: %s | question: %s", qtype.value, _q_repr(question))
 
     # Only depth-eligible types proceed; everything else uses standard ask()
     if qtype not in (QuestionType.CONCEPTUAL, QuestionType.SITUATIONAL, QuestionType.COMPARATIVE):
@@ -844,7 +956,7 @@ def deep_ask(
 
     # Step 1 — decompose into facets
     facets = _decompose_question(retrieval_query)
-    logger.info("Deep facets (%d): %s", len(facets), facets)
+    logger.info("Deep facets: %d", len(facets))
 
     # Step 2 — multi-facet retrieval; cap at k*2 (max 16) to keep context manageable
     max_passages = min(k * 2, 16)
@@ -860,11 +972,7 @@ def deep_ask(
 
     if not passages:
         return {
-            "answer": (
-                "I was unable to find relevant passages in Sri Guru Granth Sahib Ji "
-                "for your question. This topic may not be addressed in SGGS, or try "
-                "rephrasing. For guidance, consult a qualified Granthi."
-            ),
+            "answer": _append_crisis_note(_NO_PASSAGES_ANSWER, question),
             "failed_quotes": [],
             "sources": [],
             "question_type": qtype.value,
@@ -896,7 +1004,7 @@ def deep_ask(
     sources = _dedupe_sources(passages)
 
     return {
-        "answer": verified_answer,
+        "answer": _append_crisis_note(verified_answer, question),
         "failed_quotes": failed_quotes,
         "sources": sources,
         "question_type": qtype.value,
@@ -931,6 +1039,11 @@ _NO_PASSAGES_ANSWER = (
 
 def _llm_stream(system: str, messages: list[dict], max_tokens: int = MAX_TOKENS):
     """Yield answer text chunks from the configured provider."""
+    with _llm_slot():
+        yield from _llm_stream_inner(system, messages, max_tokens)
+
+
+def _llm_stream_inner(system: str, messages: list[dict], max_tokens: int = MAX_TOKENS):
     if PROVIDER == "gemini":
         from google.genai import types
         client = _get_gemini_client()
@@ -988,10 +1101,22 @@ def ask_stream(
 
     clean_history = _sanitise_history(history or [])
     qtype = classify_question(question, history=clean_history)
-    logger.info("Stream question type: %s | question: %.80s", qtype.value, question)
+    logger.info("Stream question type: %s | question: %s", qtype.value, _q_repr(question))
+
+    cacheable = (not deep) and _cacheable(question, clean_history, writer, raag, ang_range, k, qtype)
+    if cacheable:
+        cached = _response_cache.get(question)
+        if cached is not None:
+            logger.info("Response-cache hit (stream) for %s", _q_repr(question))
+            yield {"type": "delta", "text": cached["answer"]}
+            yield {"type": "done", "sources": cached.get("sources", []),
+                   "failed_quotes": cached.get("failed_quotes", []),
+                   "question_type": cached.get("question_type", qtype.value),
+                   "cached": True}
+            return
 
     if qtype in _CANNED_RESPONSES:
-        yield {"type": "delta", "text": _CANNED_RESPONSES[qtype]}
+        yield {"type": "delta", "text": _append_crisis_note(_CANNED_RESPONSES[qtype], question)}
         yield {"type": "done", "sources": [], "failed_quotes": [], "question_type": qtype.value}
         return
 
@@ -1022,7 +1147,7 @@ def ask_stream(
         passages = retrieve(retrieval_query, k=k, **filter_kwargs)
 
     if not passages:
-        yield {"type": "delta", "text": _NO_PASSAGES_ANSWER}
+        yield {"type": "delta", "text": _append_crisis_note(_NO_PASSAGES_ANSWER, question)}
         yield {"type": "done", "sources": [], "failed_quotes": [], "question_type": qtype.value}
         return
 
@@ -1038,25 +1163,38 @@ def ask_stream(
 
     yield {"type": "status", "stage": "generating"}
     sv = StreamingVerifier(trusted_lines=_trusted_lines_from_passages(passages))
+    emitted: list[str] = []
     try:
         for chunk in _llm_stream(system=_SYSTEM_PROMPTS[qtype], messages=messages):
             safe = sv.feed(chunk)
             if safe:
+                emitted.append(safe)
                 yield {"type": "delta", "text": safe}
     except Exception as exc:
         logger.error("LLM streaming error (%s): %s", PROVIDER, exc)
         raise
     tail = sv.close()
     if tail:
+        emitted.append(tail)
         yield {"type": "delta", "text": tail}
+    if _needs_crisis_note(question):
+        yield {"type": "delta", "text": _CRISIS_NOTE}
 
     if sv.failed_quotes:
         logger.warning("Removed %d unverified quote(s) during stream: %s",
                        len(sv.failed_quotes), sv.failed_quotes)
 
+    sources = _dedupe_sources(passages)
+    if cacheable and not sv.failed_quotes and sources:
+        _response_cache.put(question, {
+            "answer": "".join(emitted),
+            "failed_quotes": [],
+            "sources": sources,
+            "question_type": qtype.value,
+        })
     yield {
         "type": "done",
-        "sources": _dedupe_sources(passages),
+        "sources": sources,
         "failed_quotes": sv.failed_quotes,
         "question_type": qtype.value,
     }
