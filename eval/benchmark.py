@@ -72,7 +72,10 @@ def _mock_llm(system: str, messages: list[dict], max_tokens: int = 4000) -> str:
     for ang, gurmukhi in pairs[:2]:
         parts.append(f'<tuk ang="{ang}">{gurmukhi.strip()}</tuk>')
         parts.append("Translation: as the Guru teaches us.")
-    if "sgpc.net/rehat_maryada" in system:
+    # Only the REHAT specialist prompt carries this section header — the
+    # base rules mention the URL too, so matching on the URL alone would
+    # append the notice to every answer.
+    if "Handling conduct / Rehat questions" in system:
         parts.append(
             "Questions about specific rules of Sikh conduct are answered by the "
             "Sikh Rehat Maryada: https://www.sgpc.net/rehat_maryada/ "

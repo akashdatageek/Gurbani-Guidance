@@ -70,7 +70,7 @@ def test_content_checks_only_in_real_mode():
 def test_mock_llm_quotes_passages_and_rehat_notice():
     user = ("[Passage 1] Ang 10\n  [Ang 10] Gurmukhi: ਪਹਿਲੀ ਤੁਕ ॥\n"
             "  Translation: first line")
-    out = _mock_llm("… sgpc.net/rehat_maryada …", [{"role": "user", "content": user}])
+    out = _mock_llm("… Handling conduct / Rehat questions …", [{"role": "user", "content": user}])
     assert '<tuk ang="10">ਪਹਿਲੀ ਤੁਕ ॥</tuk>' in out
     assert "sgpc.net/rehat_maryada" in out
 
