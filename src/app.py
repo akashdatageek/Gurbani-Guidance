@@ -15,7 +15,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from collections import defaultdict
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -88,6 +87,20 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """Baseline security headers for a JSON/SSE API."""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+    response.headers.setdefault(
+        "Strict-Transport-Security", "max-age=63072000; includeSubDomains"
+    )
+    return response
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -125,49 +138,28 @@ def _check_auth(request: Request) -> None:
         raise HTTPException(401, detail="Missing or invalid API token.")
 
 
-_daily_count = 0
-_daily_date = ""
+# Backend chosen once per process: Redis when REDIS_URL is set (shared
+# across replicas), else in-memory (single-worker semantics).
+from src.state import create_state
+
+_state = create_state()
 
 
 def _check_daily_cap() -> None:
     """Global daily budget backstop for the LLM key (all clients combined)."""
-    global _daily_count, _daily_date
-    if DAILY_REQUEST_CAP <= 0:
-        return
-    today = time.strftime("%Y-%m-%d")
-    if today != _daily_date:
-        _daily_date = today
-        _daily_count = 0
-    if _daily_count >= DAILY_REQUEST_CAP:
+    if not _state.daily_take(DAILY_REQUEST_CAP):
         raise HTTPException(
             429, detail="Daily request budget reached. Please try again tomorrow."
         )
-    _daily_count += 1
 
 
 def _refund_daily() -> None:
     """Give back a budget slot when a counted request fails before answering."""
-    global _daily_count
-    _daily_count = max(0, _daily_count - 1)
-
-
-_rate_limit_store: dict[str, list[float]] = defaultdict(list)
-_RATE_STORE_MAX_IPS = 10_000   # evict oldest IPs beyond this
+    _state.daily_refund()
 
 
 def _check_rate_limit(ip: str) -> bool:
-    now = time.time()
-    window_start = now - RATE_LIMIT_WINDOW
-    _rate_limit_store[ip] = [t for t in _rate_limit_store[ip] if t > window_start]
-    if len(_rate_limit_store[ip]) >= RATE_LIMIT_MAX:
-        return False
-    _rate_limit_store[ip].append(now)
-    # Evict oldest IPs if store grows too large
-    if len(_rate_limit_store) > _RATE_STORE_MAX_IPS:
-        oldest = sorted(_rate_limit_store, key=lambda k: max(_rate_limit_store[k], default=0))
-        for k in oldest[:_RATE_STORE_MAX_IPS // 10]:
-            del _rate_limit_store[k]
-    return True
+    return _state.rate_limit_allow(ip, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW)
 
 
 # ---------------------------------------------------------------------------
@@ -274,8 +266,15 @@ def ask_endpoint(request: Request, body: AskRequest) -> AskResponse:
     q_hash = hashlib.sha256(body.question.encode()).hexdigest()[:12]
     t0 = time.monotonic()
 
+    from src.rag import LLMBusyError
+
     try:
         result = deep_ask(body.question, **kwargs) if body.deep else ask(body.question, **kwargs)
+    except LLMBusyError:
+        _refund_daily()
+        raise HTTPException(
+            503, detail="We are experiencing high demand right now — please try again in a moment."
+        )
     except Exception as exc:
         _refund_daily()
         logger.exception("Error in /ask (q_hash=%s)", q_hash)
@@ -346,6 +345,8 @@ async def ask_stream_endpoint(request: Request, body: AskRequest) -> StreamingRe
     q_hash = hashlib.sha256(body.question.encode()).hexdigest()[:12]
     t0 = time.monotonic()
 
+    from src.rag import LLMBusyError
+
     def event_source():
         try:
             for event in ask_stream(body.question, **kwargs):
@@ -360,6 +361,16 @@ async def ask_stream_endpoint(request: Request, body: AskRequest) -> StreamingRe
                         int((time.monotonic() - t0) * 1000),
                         body.deep,
                     )
+        except LLMBusyError:
+            _refund_daily()
+            yield (
+                "data: "
+                + _json.dumps({
+                    "type": "error",
+                    "detail": "We are experiencing high demand right now — please try again in a moment.",
+                })
+                + "\n\n"
+            )
         except Exception:  # noqa: BLE001 — surface as an SSE error event
             _refund_daily()
             logger.exception("Error in /ask/stream (q_hash=%s)", q_hash)
@@ -374,3 +385,15 @@ async def ask_stream_endpoint(request: Request, body: AskRequest) -> StreamingRe
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.get("/ready")
+async def ready() -> dict:
+    """Readiness probe: 200 only when the service can actually answer.
+
+    /health stays a pure liveness check; load balancers should gate traffic
+    on /ready so replicas without an index never receive questions.
+    """
+    if not _index_ready:
+        raise HTTPException(503, detail="Not ready: retrieval index not loaded.")
+    return {"ready": True}

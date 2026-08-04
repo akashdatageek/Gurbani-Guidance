@@ -131,3 +131,32 @@ def test_situational_with_intensifier_adverbs():
         "I feel really overwhelmed by everything",
     ]:
         assert classify_question(q) == QuestionType.SITUATIONAL, q
+
+
+# ---------------------------------------------------------------------------
+# Privacy redaction + crisis signposting
+# ---------------------------------------------------------------------------
+
+def test_q_repr_redacts_by_default(monkeypatch):
+    import src.rag as rag
+    monkeypatch.setattr(rag, "LOG_QUESTION_TEXT", False)
+    out = rag._q_repr("I am grieving and depressed")
+    assert "grieving" not in out and out.startswith("q#")
+    monkeypatch.setattr(rag, "LOG_QUESTION_TEXT", True)
+    assert "grieving" in rag._q_repr("I am grieving and depressed")
+
+
+def test_crisis_note_detection():
+    from src.rag import _needs_crisis_note
+    assert _needs_crisis_note("I want to end my life, nothing matters")
+    assert _needs_crisis_note("thoughts of suicide won't leave me")
+    assert _needs_crisis_note("mainu khudkushi de khayal aunde ne")
+    assert not _needs_crisis_note("I feel sad and lost after my move")
+    assert not _needs_crisis_note("What does Gurbani say about death?")
+
+
+def test_crisis_note_appended_even_on_refusal_paths(monkeypatch):
+    import src.rag as rag
+    monkeypatch.setattr(rag, "retrieve", lambda *a, **k: [])
+    result = rag.ask("I want to end my life. What does Gurbani say about hope?")
+    assert "findahelpline.com" in result["answer"]

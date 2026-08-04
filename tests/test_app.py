@@ -77,3 +77,19 @@ def test_stats_rate_limited(app_module, monkeypatch):
     monkeypatch.setattr(app_module, "_check_rate_limit", lambda ip: False)
     client = TestClient(app_module.app)
     assert client.get("/stats").status_code == 429
+
+
+def test_ready_endpoint_gates_on_index(app_module, monkeypatch):
+    client = TestClient(app_module.app)
+    monkeypatch.setattr(app_module, "_index_ready", False)
+    assert client.get("/ready").status_code == 503
+    monkeypatch.setattr(app_module, "_index_ready", True)
+    assert client.get("/ready").status_code == 200
+
+
+def test_security_headers_present(app_module):
+    client = TestClient(app_module.app)
+    r = client.get("/health")
+    assert r.headers["X-Content-Type-Options"] == "nosniff"
+    assert r.headers["X-Frame-Options"] == "DENY"
+    assert "Content-Security-Policy" in r.headers

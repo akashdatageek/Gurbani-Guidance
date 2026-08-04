@@ -39,3 +39,11 @@ jobs:
       # answer), Rehat notices, and refusals on every push/PR.
       - name: Model-output benchmark (mock)
         run: python eval/benchmark.py --mock --force-scan-retrieval --runs 1
+
+      # Dependency vulnerability scan — informational (advisories without
+      # upstream fixes must not brick CI); review failures in the log.
+      - name: pip-audit
+        continue-on-error: true
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt
